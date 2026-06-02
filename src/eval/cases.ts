@@ -1,6 +1,13 @@
 import type { PlanResult, Persona } from '../types';
 import { runPipeline } from '../engine/pipeline';
 import { PERSONA_MAP, PERSONAS } from '../data/personas';
+import {
+  hasExplicitFamilyIntent,
+  isAdultNightlifePOI,
+  isQuietIntent,
+  isStrongFamilyPOI,
+  wantsAdultNightlife,
+} from '../engine/semanticGuards';
 
 // ------------------------------------------------------------
 // 评测 case:每条断言一组性质。
@@ -59,6 +66,37 @@ const A = {
     // 允许 warn,但用于检查家庭场景大致早收尾
     return route.endTime <= h + 1.0;
   },
+  noAdultNightlifeForFamily: () => (r: PlanResult) => {
+    const route = r.routes[0];
+    if (!route) return false;
+    if (!hasExplicitFamilyIntent(r.constraints)) return true;
+    if (wantsAdultNightlife(r.constraints)) return true;
+    return route.stops.every((s) => !isAdultNightlifePOI(s.scored.poi));
+  },
+  noStrongFamilyUnlessAsked: () => (r: PlanResult) => {
+    const route = r.routes[0];
+    if (!route) return false;
+    if (hasExplicitFamilyIntent(r.constraints)) return true;
+    return route.stops.every((s) => !isStrongFamilyPOI(s.scored.poi));
+  },
+  noAdultNightlifeUnlessAsked: () => (r: PlanResult) => {
+    const route = r.routes[0];
+    if (!route) return false;
+    if (wantsAdultNightlife(r.constraints)) return true;
+    return route.stops.every((s) => !isAdultNightlifePOI(s.scored.poi));
+  },
+  quietAvoidsAdultEntertainment: () => (r: PlanResult) => {
+    const route = r.routes[0];
+    if (!route) return false;
+    if (!isQuietIntent(r.constraints)) return true;
+    if (wantsAdultNightlife(r.constraints)) return true;
+    return route.stops.every((s) => {
+      const poi = s.scored.poi;
+      if (isAdultNightlifePOI(poi)) return false;
+      if (poi.category === 'entertainment' && !r.constraints.mustCategories.includes('entertainment')) return false;
+      return true;
+    });
+  },
 };
 
 export const CASES: EvalCase[] = [
@@ -70,6 +108,8 @@ export const CASES: EvalCase[] = [
       { name: '含夜景', fn: A.hasCategory('nightscape'), desc: '覆盖夜景类目' },
       { name: '预算达标/标记', fn: A.budgetWithinOrFlagged(), desc: '预算内或被标记' },
       { name: '营业无硬冲突', fn: A.noBadOpen(), desc: '无 fail 级营业冲突' },
+      { name: '安静避夜生活', fn: A.quietAvoidsAdultEntertainment(), desc: '安静场景不优先成人夜生活/娱乐' },
+      { name: '无强亲子错配', fn: A.noStrongFamilyUnlessAsked(), desc: '非带娃文本不混入强亲子 POI' },
       { name: '每站有评分', fn: A.allScored(), desc: '所有 POI 有 personalized_score' },
       { name: '有推荐理由', fn: A.hasReasons(), desc: '每站有推荐理由' },
       { name: '有备选', fn: A.hasAlternatives(), desc: '至少 1 条备选路线' },
@@ -82,6 +122,7 @@ export const CASES: EvalCase[] = [
       { name: '≥3 POI', fn: A.minStops(3), desc: '路线至少 3 个 POI' },
       { name: '覆盖≥3类', fn: A.coverGte(3), desc: '类目覆盖 ≥3' },
       { name: '无夜店', fn: A.avoidRespected('nightlife'), desc: '不含夜生活主标签 POI' },
+      { name: '无成人夜生活', fn: A.noAdultNightlifeForFamily(), desc: '带娃路线不含 LiveHouse/清吧/酒吧类 POI' },
       { name: '预算达标/标记', fn: A.budgetWithinOrFlagged(), desc: '预算内或被标记' },
       { name: '早收尾', fn: A.endsBefore(18.5), desc: '大致晚饭前结束' },
       { name: '每站有评分', fn: A.allScored(), desc: '所有 POI 有评分' },
@@ -95,6 +136,7 @@ export const CASES: EvalCase[] = [
       { name: '含餐饮', fn: A.hasCategory('dining'), desc: '覆盖餐饮' },
       { name: '预算达标/标记', fn: A.budgetWithinOrFlagged(), desc: '预算内或被标记' },
       { name: '营业无硬冲突', fn: A.noBadOpen(), desc: '无 fail 级营业冲突' },
+      { name: '无强亲子错配', fn: A.noStrongFamilyUnlessAsked(), desc: '朋友聚会不混入强亲子 POI' },
       { name: '每站有评分', fn: A.allScored(), desc: '所有 POI 有评分' },
       { name: '有备选', fn: A.hasAlternatives(), desc: '至少 1 条备选路线' },
     ],
@@ -106,6 +148,8 @@ export const CASES: EvalCase[] = [
       { name: '≥3 POI', fn: A.minStops(3), desc: '路线至少 3 个 POI' },
       { name: '覆盖≥3类', fn: A.coverGte(3), desc: '类目覆盖 ≥3' },
       { name: '预算达标/标记', fn: A.budgetWithinOrFlagged(), desc: '预算内或被标记' },
+      { name: '安静避夜生活', fn: A.quietAvoidsAdultEntertainment(), desc: '安静 citywalk 不混入成人夜生活/娱乐' },
+      { name: '无强亲子错配', fn: A.noStrongFamilyUnlessAsked(), desc: '独自闲逛不混入强亲子 POI' },
       { name: '每站有评分', fn: A.allScored(), desc: '所有 POI 有评分' },
       { name: '有推荐理由', fn: A.hasReasons(), desc: '每站有推荐理由' },
       { name: 'Agent Trace', fn: A.hasAgentTrace(), desc: '9段 Agent Loop 全部记录' },
@@ -118,6 +162,7 @@ export const CASES: EvalCase[] = [
     asserts: [
       { name: '≥3 POI', fn: A.minStops(3), desc: '路线至少 3 个 POI' },
       { name: '覆盖≥3类', fn: A.coverGte(3), desc: '类目覆盖 ≥3' },
+      { name: '无强亲子错配', fn: A.noStrongFamilyUnlessAsked(), desc: '情侣场景不混入强亲子 POI' },
       { name: '每站有评分', fn: A.allScored(), desc: '所有 POI 有评分' },
       { name: '有备选', fn: A.hasAlternatives(), desc: '至少 1 条备选路线' },
     ],
@@ -129,6 +174,7 @@ export const CASES: EvalCase[] = [
       { name: '≥3 POI', fn: A.minStops(3), desc: '路线至少 3 个 POI' },
       { name: '含餐饮', fn: A.hasCategory('dining'), desc: '覆盖餐饮' },
       { name: '无夜店', fn: A.avoidRespected('nightlife'), desc: '不含夜生活主标签 POI' },
+      { name: '无成人夜生活', fn: A.noAdultNightlifeForFamily(), desc: '带娃路线不含 LiveHouse/清吧/酒吧类 POI' },
       { name: '早收尾', fn: A.endsBefore(19), desc: '大致 19 点前结束' },
       { name: '每站有评分', fn: A.allScored(), desc: '所有 POI 有评分' },
     ],
@@ -139,6 +185,7 @@ export const CASES: EvalCase[] = [
     asserts: [
       { name: '≥3 POI', fn: A.minStops(3), desc: '路线至少 3 个 POI' },
       { name: '含文化', fn: A.hasCategory('culture'), desc: '覆盖文化类目' },
+      { name: '无强亲子错配', fn: A.noStrongFamilyUnlessAsked(), desc: '独自闲逛不混入强亲子 POI' },
       { name: '每站有评分', fn: A.allScored(), desc: '所有 POI 有评分' },
       { name: '有推荐理由', fn: A.hasReasons(), desc: '每站有推荐理由' },
     ],
@@ -150,6 +197,7 @@ export const CASES: EvalCase[] = [
       { name: '≥3 POI', fn: A.minStops(3), desc: '路线至少 3 个 POI' },
       { name: '含餐饮', fn: A.hasCategory('dining'), desc: '覆盖餐饮' },
       { name: '覆盖≥3类', fn: A.coverGte(3), desc: '类目覆盖 ≥3' },
+      { name: '无强亲子错配', fn: A.noStrongFamilyUnlessAsked(), desc: '朋友聚会不混入强亲子 POI' },
       { name: '每站有评分', fn: A.allScored(), desc: '所有 POI 有评分' },
     ],
   },
@@ -162,6 +210,30 @@ export const CASES: EvalCase[] = [
       { name: '按文本优先', fn: A.resolvedPersona('solo'), desc: '高置信文本优先覆盖手选画像' },
       { name: 'Agent Trace', fn: A.hasAgentTrace(), desc: '9段 Agent Loop 全部记录' },
       { name: '≥3 POI', fn: A.minStops(3), desc: '路线至少 3 个 POI' },
+      { name: '无强亲子错配', fn: A.noStrongFamilyUnlessAsked(), desc: '文本独自时不混入强亲子 POI' },
+    ],
+  },
+  {
+    id: 'c10', title: '朋友·新天地安静接电话', personaId: 'friends',
+    input: '朋友来上海,下午在新天地附近逛逛,3点想找个安静地方接电话,晚上想吃饭但别排队太久,人均300内',
+    asserts: [
+      { name: '≥3 POI', fn: A.minStops(3), desc: '路线至少 3 个 POI' },
+      { name: '含餐饮', fn: A.hasCategory('dining'), desc: '覆盖晚饭/餐饮需求' },
+      { name: '预算达标/标记', fn: A.budgetWithinOrFlagged(), desc: '预算内或被标记' },
+      { name: '安静避夜生活', fn: A.quietAvoidsAdultEntertainment(), desc: '接电话场景不混入成人夜生活/娱乐' },
+      { name: '无强亲子错配', fn: A.noStrongFamilyUnlessAsked(), desc: '朋友出行不混入强亲子 POI' },
+      { name: '有推荐理由', fn: A.hasReasons(), desc: '每站有推荐理由' },
+    ],
+  },
+  {
+    id: 'c11', title: '独逛·外滩普通夜晚', personaId: 'solo',
+    input: '一个人晚上在外滩附近逛逛,人均300,十点前结束',
+    asserts: [
+      { name: '≥3 POI', fn: A.minStops(3), desc: '路线至少 3 个 POI' },
+      { name: '无成人夜生活', fn: A.noAdultNightlifeUnlessAsked(), desc: '未明确酒吧/LiveHouse 时不主动推荐成人夜生活' },
+      { name: '无强亲子错配', fn: A.noStrongFamilyUnlessAsked(), desc: '独自闲逛不混入强亲子 POI' },
+      { name: '预算达标/标记', fn: A.budgetWithinOrFlagged(), desc: '预算内或被标记' },
+      { name: '有推荐理由', fn: A.hasReasons(), desc: '每站有推荐理由' },
     ],
   },
 ];

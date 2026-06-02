@@ -1,5 +1,5 @@
 import type { Route, Constraints, Persona } from '../types';
-import { CATEGORY_LABEL, SCENE_LABEL } from '../types';
+import { CATEGORY_LABEL } from '../types';
 import { budgetVerdict } from '../lib/display';
 
 // ------------------------------------------------------------
@@ -19,52 +19,29 @@ export function explainRoute(
   route: Route, c: Constraints, persona: Persona,
 ): { explanation: string; risks: string[] } {
   const stops = route.stops;
-  const first = stops[0]?.scored.poi;
-  const last = stops[stops.length - 1]?.scored.poi;
-
   // ---- 解释 ----
   const parts: string[] = [];
 
   // 整体节奏
   const paceWord = c.pace === 'relaxed' ? '舒缓不赶' : c.pace === 'packed' ? '紧凑充实' : '张弛有度';
-  parts.push(
-    `为「${persona.label}」定制 · ${fmtH(c.startTime)} 从${first?.name ?? ''}出发,${fmtH(route.endTime)} 在${last?.name ?? ''}收尾,${stops.length} 站节奏${paceWord}。`,
-  );
-
-  // 类目编排逻辑
-  const order = stops.map((s) => CATEGORY_LABEL[s.scored.poi.category]).join(' → ');
-  parts.push(`动线编排:${order}。`);
-
-  // 餐饮对齐饭点
-  const meal = stops.find((s) => s.scored.poi.category === 'dining');
-  if (meal) {
-    parts.push(`正餐安排在 ${fmtH(meal.arrive)} 前后,贴合饭点。`);
-  }
-
-  // 夜景收尾
-  const night = stops.find((s) => s.scored.poi.category === 'nightscape');
-  if (night && night === stops[stops.length - 1]) {
-    parts.push(`以${night.scored.poi.name}的夜景/氛围收尾,适合${persona.label}。`);
-  }
-
-  // 个性化亮点(取首站理由)
-  if (first && stops[0].scored.reasons.length) {
-    parts.push(`亮点示例:${stops[0].scored.poi.name} —— ${stops[0].scored.reasons[0]}。`);
-  }
+  parts.push(`${fmtH(route.stops[0]?.arrive ?? c.startTime)}–${fmtH(route.endTime)} · ${stops.length}站 · 节奏${paceWord}`);
 
   // 预算总结
   if (c.budgetPerCapita != null) {
     const verdict = budgetVerdict(route.totalCost, c.budgetPerCapita);
     if (verdict.tone === 'ok') {
-      parts.push(`人均预计 ¥${route.totalCost},控制在 ¥${c.budgetPerCapita} 预算内。`);
+      parts.push(`人均¥${route.totalCost}(预算内)`);
     } else {
-      parts.push(`人均预计 ¥${route.totalCost},${verdict.label}(预算 ¥${c.budgetPerCapita}),可点「便宜一点」替换高价节点。`);
+      parts.push(`人均¥${route.totalCost}(${verdict.label})`);
     }
   } else {
-    parts.push(`人均预计 ¥${route.totalCost}。`);
+    parts.push(`人均¥${route.totalCost}`);
   }
 
-  const explanation = parts.join('');
+  const categories = [...new Set(stops.map((s) => CATEGORY_LABEL[s.scored.poi.category]))].slice(0, 3);
+  if (categories.length) parts.push(categories.join(' / '));
+
+  const explanation = parts.join(' · ');
 
   // ---- 风险提示 ----
   const risks: string[] = [];

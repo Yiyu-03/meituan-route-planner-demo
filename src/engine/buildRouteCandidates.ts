@@ -4,6 +4,7 @@ import type {
 import { distBetween, travelEstimate } from './geo';
 import { buildMapLeg } from '../data/mapData';
 import { slotTemplateFor } from '../data/slotPlans';
+import { anchorAreas } from './parseConstraints';
 
 // ------------------------------------------------------------
 // ④ buildRouteCandidates
@@ -30,6 +31,8 @@ export function planSlots(c: Constraints, persona: Persona): Category[] {
   let n = durH <= 2.5 ? 3 : durH <= 4 ? 4 : 5;
   if (c.pace === 'relaxed') n = Math.max(3, n - 1);
   if (c.pace === 'packed') n = Math.min(5, n + 1);
+  if (c.budgetPerCapita != null && c.budgetPerCapita <= 320) n = Math.min(n, 4);
+  if (c.budgetPerCapita != null && c.budgetPerCapita <= 180) n = Math.min(n, 3);
 
   const isMeal = (h: number) => (h >= 11 && h <= 13.5) || (h >= 17 && h <= 20.5);
   const latestEnd = Math.min(persona.latestEnd, end + 0.25);
@@ -90,7 +93,7 @@ function reorderMealToMealtime(slots: Category[], start: number, durH: number) {
 
 /** 取每个 slot 类目的 top-K 候选 */
 function topKForSlots(
-  slots: Category[], scored: ScoredPOI[],
+  slots: Category[], scored: ScoredPOI[], c: Constraints,
 ): Map<number, ScoredPOI[]> {
   const byCat = new Map<Category, ScoredPOI[]>();
   for (const s of scored) {
@@ -98,9 +101,21 @@ function topKForSlots(
     arr.push(s);
     byCat.set(s.poi.category, arr);
   }
+  const anchors = new Set(anchorAreas(c));
   const result = new Map<number, ScoredPOI[]>();
   slots.forEach((cat, idx) => {
-    const pool = (byCat.get(cat) ?? []).slice(0, TOPK_PER_SLOT);
+    const catPool = byCat.get(cat) ?? [];
+    const anchorPool = anchors.size
+      ? catPool.filter((item) => anchors.has(item.poi.area)).slice(0, 3)
+      : [];
+    const seen = new Set<string>();
+    const pool = [...anchorPool, ...catPool]
+      .filter((item) => {
+        if (seen.has(item.poi.id)) return false;
+        seen.add(item.poi.id);
+        return true;
+      })
+      .slice(0, TOPK_PER_SLOT + anchorPool.length);
     result.set(idx, pool);
   });
   return result;
@@ -149,8 +164,9 @@ export function buildRouteCandidates(
   scored: ScoredPOI[], c: Constraints, persona: Persona,
 ): { slots: Category[]; routes: Route[] } {
   const slots = planSlots(c, persona);
-  const slotPools = topKForSlots(slots, scored);
+  const slotPools = topKForSlots(slots, scored, c);
   const latestEnd = effectiveLatestEnd(c, persona);
+  const anchors = new Set(anchorAreas(c));
 
   let beams: PartialRoute[] = [{ picks: [], usedIds: new Set(), scoreSum: 0, penalty: 0 }];
 
@@ -195,7 +211,7 @@ export function buildRouteCandidates(
         const np: PartialRoute = {
           picks: [...beam.picks, cand],
           usedIds: new Set(beam.usedIds).add(cand.poi.id),
-          scoreSum: beam.scoreSum + cand.score,
+          scoreSum: beam.scoreSum + cand.score + (anchors.has(cand.poi.area) ? 12 : 0),
           penalty: beam.penalty + legPenalty + waitPenalty,
         };
         next.push(np);

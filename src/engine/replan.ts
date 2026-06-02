@@ -145,6 +145,53 @@ export function buildReplanActions(route: Route, persona: Persona): string[] {
   return [...new Set(actions)].slice(0, 6);
 }
 
+function stopTotalCost(stops: ScoredPOI[]): number {
+  return Math.round(stops.reduce((sum, stop) => sum + stop.poi.perCapita, 0));
+}
+
+function tightenBudgetStops(
+  initialStops: ScoredPOI[],
+  budget: number,
+  allScored: ScoredPOI[],
+  maxRounds = 4,
+): { stops: ScoredPOI[]; changed: string[]; messages: string[]; beforeCost: number; afterCost: number } {
+  let stops = [...initialStops];
+  const changed: string[] = [];
+  const messages: string[] = [];
+  const beforeCost = stopTotalCost(stops);
+
+  for (let round = 0; round < maxRounds && stopTotalCost(stops) > budget; round++) {
+    const used = new Set(stops.map((s) => s.poi.id));
+    let best:
+      | { idx: number; old: ScoredPOI; repl: ScoredPOI; saving: number }
+      | null = null;
+
+    for (let idx = 0; idx < stops.length; idx++) {
+      const old = stops[idx];
+      const repl = allScored
+        .filter((s) => s.poi.category === old.poi.category && !used.has(s.poi.id) && s.poi.perCapita < old.poi.perCapita)
+        .sort((a, b) => {
+          const savingA = old.poi.perCapita - a.poi.perCapita;
+          const savingB = old.poi.perCapita - b.poi.perCapita;
+          return savingB - savingA || b.score - a.score;
+        })[0];
+
+      if (!repl) continue;
+      const saving = old.poi.perCapita - repl.poi.perCapita;
+      if (!best || saving > best.saving || (saving === best.saving && repl.score > best.repl.score)) {
+        best = { idx, old, repl, saving };
+      }
+    }
+
+    if (!best) break;
+    stops[best.idx] = best.repl;
+    changed.push(best.repl.poi.id);
+    messages.push(`「${best.old.poi.name}」换成「${best.repl.poi.name}」`);
+  }
+
+  return { stops, changed, messages, beforeCost, afterCost: stopTotalCost(stops) };
+}
+
 /**
  * 执行局部重规划。
  * @param route 当前(推荐)路线
@@ -172,6 +219,10 @@ export function applyRefine(
       let targetIdx = action.category
         ? stops.findIndex((s) => s.poi.category === action.category)
         : stops.reduce((worst, s, i, arr) => (s.score < arr[worst].score ? i : worst), 0);
+      if (!action.category && action.criterion === 'cheaper') {
+        targetIdx = stops.reduce((maxIdx, s, i, arr) =>
+          s.poi.perCapita > arr[maxIdx].poi.perCapita ? i : maxIdx, 0);
+      }
 
       if (targetIdx < 0) {
         message = `当前路线里没有${action.category ? CATEGORY_LABEL[action.category] : ''}节点可替换。`;
@@ -207,19 +258,14 @@ export function applyRefine(
 
     case 'setBudget': {
       cons.budgetPerCapita = action.budget!;
-      // 找超支最严重(人均最高)的节点替换为同类目更便宜的
-      const sorted = [...stops].sort((a, b) => b.poi.perCapita - a.poi.perCapita);
-      const victim = sorted[0];
-      const vIdx = stops.findIndex((s) => s.poi.id === victim.poi.id);
-      const pool = poolByCat(victim.poi.category)
-        .filter((s) => s.poi.perCapita < victim.poi.perCapita)
-        .sort((a, b) => a.poi.perCapita - b.poi.perCapita);
-      if (pool.length) {
-        // 重新按新预算打分后取最佳便宜项
-        const repl = pool[0];
-        stops[vIdx] = repl;
-        changed.push(repl.poi.id);
-        message = `预算降到 ¥${action.budget}:把人均最高的「${victim.poi.name}」(¥${victim.poi.perCapita})换成「${repl.poi.name}」(¥${repl.poi.perCapita})。`;
+      const budgetPatch = tightenBudgetStops(stops, action.budget!, allScored);
+      stops = budgetPatch.stops;
+      changed.push(...budgetPatch.changed);
+      if (budgetPatch.changed.length) {
+        const resultText = budgetPatch.afterCost <= action.budget!
+          ? `已落在预算内`
+          : `仍略高于预算,建议少走一站或继续点「便宜一点」`;
+        message = `预算降到 ¥${action.budget}: ${budgetPatch.messages.join('、')},人均从 ¥${budgetPatch.beforeCost} 降到 ¥${budgetPatch.afterCost},${resultText}。`;
       } else {
         message = `预算已设为 ¥${action.budget},但未找到更便宜的同类替换,请考虑减少 POI。`;
       }

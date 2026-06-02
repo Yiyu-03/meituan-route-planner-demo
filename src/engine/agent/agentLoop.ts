@@ -33,6 +33,10 @@ function summarizePayload(payload: unknown): string {
     const p = payload as Record<string, unknown>;
     if (typeof p.message === 'string') return p.message;
     if (typeof p.note === 'string') return p.note;
+    if (Array.isArray(p.matched) && typeof p.raw === 'string') {
+      const hits = p.matched.slice(0, 6).join(' / ');
+      return hits ? `命中约束:${hits}` : '未命中显式约束,使用默认出行参数';
+    }
     if (typeof p.personaId === 'string' && typeof p.confidence === 'number') {
       return `${PERSONA_MAP[p.personaId]?.label ?? p.personaId} · ${Math.round(p.confidence * 100)}%`;
     }
@@ -103,7 +107,12 @@ export function runAgentLoop(
   const repairResult = step('repairIfNeeded', ranked[0]?.checks.map((c) => `${c.key}:${c.status}`).join(',') ?? '无路线', () => {
     if (!ranked[0]) return { routes: ranked, repairLog: [] };
     const repaired = repairIfNeeded(ranked[0], constraints, persona, candidates);
-    const routes: Route[] = [repaired.route, ...ranked.slice(1)].map((r, idx) => ({ ...r, id: `route-${idx}` }));
+    const candidatesAfterRepair: Route[] = [repaired.route, ...ranked.slice(1)];
+    const fallbackIdx = candidatesAfterRepair.findIndex((route) => !route.checks.some((check) => check.status === 'fail'));
+    const routes = (fallbackIdx > 0
+      ? [candidatesAfterRepair[fallbackIdx], ...candidatesAfterRepair.filter((_, idx) => idx !== fallbackIdx)]
+      : candidatesAfterRepair
+    ).map((r, idx) => ({ ...r, id: `route-${idx}` }));
     return { routes, repairLog: repaired.logs };
   }, ranked[0]?.checks.some((c) => c.status === 'fail') ? 'ok' : 'skip');
 

@@ -3,6 +3,14 @@ import { POIS } from '../data/pois';
 import { AREA_MAP } from '../data/areas';
 import { anchorAreas } from './parseConstraints';
 import { haversineM } from './geo';
+import {
+  hasExplicitFamilyIntent,
+  isAdultNightlifePOI,
+  isQuietIntent,
+  isStrongFamilyPOI,
+  wantsAdultNightlife,
+  wantsNightView,
+} from './semanticGuards';
 
 // ------------------------------------------------------------
 // ② retrieveCandidates
@@ -13,7 +21,7 @@ import { haversineM } from './geo';
 // 召回后规模应远小于全量(为下游打分/组合服务),但保证类目多样。
 // ------------------------------------------------------------
 
-const RETRIEVE_RADIUS_M = 6000; // 锚区周边 6km 内(上海中心城区基本覆盖相邻几个区)
+const RETRIEVE_RADIUS_M = 3600; // 明确说“附近”时优先收紧到同区/相邻街区,避免路线跑散
 
 export interface RetrieveResult {
   candidates: POI[];
@@ -37,10 +45,18 @@ export function retrieveCandidates(c: Constraints): RetrieveResult {
   }
 
   const avoidCat = new Set(c.avoidCategories);
+  const explicitFamily = hasExplicitFamilyIntent(c);
+  const adultNightWanted = wantsAdultNightlife(c);
+  const quietMode = isQuietIntent(c);
+  const nightViewWanted = wantsNightView(c);
 
   let pool = POIS.filter((p) => {
     // 类目硬过滤
     if (avoidCat.has(p.category)) return false;
+    // 语义护栏:先挡掉明显错场景,避免后续 beam search 为了凑类目捞进不可信 POI。
+    if (explicitFamily && isAdultNightlifePOI(p) && !adultNightWanted) return false;
+    if (!explicitFamily && isStrongFamilyPOI(p)) return false;
+    if (quietMode && isAdultNightlifePOI(p) && !adultNightWanted && !nightViewWanted) return false;
     // 规避场景硬过滤:若用户明确 avoid 某 tag,且该 POI 的标签里这个 tag 是「主调」,剔除
     for (const a of c.avoid) {
       if (p.sceneTags.includes(a)) {

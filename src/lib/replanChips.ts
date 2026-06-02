@@ -11,6 +11,8 @@ export function buildReplanChips(route: Route, c: Constraints): ReplanChip[] {
   const cats = new Set(route.stops.map((stop) => stop.scored.poi.category));
   const overBudget = c.budgetPerCapita != null && route.totalCost > c.budgetPerCapita;
   const hasHotQueue = route.stops.some((stop) => stop.scored.poi.queueBase >= 0.65);
+  const hasWalkPressure = route.totalWalkMin >= 20 || route.stops.some((stop) => stop.legFromPrev?.mode === 'walk' && stop.legFromPrev.minutes >= 12);
+  const hasRidePressure = route.totalTransitMin >= 20 || route.stops.some((stop) => stop.legFromPrev?.mode === 'transit' && stop.legFromPrev.minutes >= 15);
 
   if (overBudget) chips.push({ text: '便宜一点', instruction: '换家更便宜的', emphasize: true });
 
@@ -22,7 +24,13 @@ export function buildReplanChips(route: Route, c: Constraints): ReplanChip[] {
 
   if (cats.has('cafe')) chips.push({ text: '咖啡换近一点的', instruction: '换一家更近的咖啡' });
 
-  chips.push({ text: '走太多路了', instruction: '不要太赶' });
+  if (hasWalkPressure) {
+    chips.push({ text: '走路太多了', instruction: '不要太赶' });
+  } else if (hasRidePressure) {
+    chips.push({ text: '换近一点少打车', instruction: '换一家更近的' });
+  } else {
+    chips.push({ text: '节奏再松一点', instruction: '不要太赶' });
+  }
   chips.push({ text: '想多拍点照', instruction: '加一个适合拍照的地方' });
   chips.push({ text: '再多逛一个地方', instruction: '再多逛一个地方' });
 

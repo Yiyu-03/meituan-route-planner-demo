@@ -1,205 +1,138 @@
-# 本地路线智能规划 · AI Local Route Planner
+# 美团 AI Hackathon · 本地生活路线智能规划 Demo
 
-> 美团 AI Hackathon Demo · 输入一句自然语言出行需求,实时生成**个性化、可解释、经约束校验**的本地玩乐路线。
->
-> **核心论点:路线不是预制模板,而是每次实时算出来的。**
+这是一个 Vite + React + TypeScript 的本地生活路线规划 Demo。用户输入一句自然语言出行需求后，系统基于本地 mock POI 数据生成可执行路线，并展示预算、营业、排队、移动成本、推荐理由、备选方案和局部重规划结果。
 
-一句话需求(如「周六晚上和女朋友在外滩约会,想安静有氛围,人均 400,看夜景」)进来,系统走完 9 段 Agent Loop 产出路线,并把**每一步的依据**摊开给你看:抽取了哪些约束、自动识别了什么画像、是否和手选画像冲突、召回了哪些候选、每个 POI 为什么被推荐(8 维评分)、路线是否违反营业/预算/步行等硬约束。
+当前版本的重点不是接真实服务，而是把“本地生活路线 Agent”跑通并讲清楚：路线不是 LLM 直接编出来的攻略文本，而是经过结构化约束抽取、候选召回、个性化排序、路线组合、约束校验和必要修复后生成的路线对象。
 
----
+## 当前能力
 
-## 为什么这不是「预制模板」
+- 自然语言输入：识别城市/区域、时间、人数、预算、偏好、规避条件、交通节奏等。
+- 多约束路线：串联 3 个以上 POI，覆盖餐饮、咖啡、文化、娱乐、购物、夜景等本地生活场景。
+- 用户画像：支持情侣约会、带娃家庭、朋友聚会、独自闲逛，并可由文本自动推断。
+- mock 登录/注册：昵称、出行偏好、预算偏好写入 localStorage。
+- 用户 session/history：最近规划记录按 mock userId 分开保存，未登录态也有独立访客归属。
+- 偏好注入：安静、省钱、少排队、亲子友好、预算偏好会进入规划输入并影响推荐排序。
+- 多轮修改：支持“换一家评分更高的餐厅”“预算降到 300”“不要太赶”等局部 replan。
+- 数据来源说明：在“查看规划依据”附录中说明 mock 数据源与未来可替换的真实接口。
+- 独立 mock backend：`server/` 提供 mock auth、mock history、mock POI search 和 mock route estimate，用于说明服务端与数据源接口形态。
+- 评测脚本：验证路线数量、预算/营业/排队/画像语义护栏、同输入不同画像差异等。
 
-这是评委最该质疑的点,所以系统从架构上回应它:
+## Agent Loop
 
-| 质疑 | 设计回应 |
-| --- | --- |
-| 「是不是几套写死的路线?」 | 同一句需求,切换 4 个画像 → 产出 4 条**不同**路线(评测中两两差异率 **100%**) |
-| 「是不是 LLM 直接吐了段文本?」 | 全程**无 LLM 生成路线**。约束抽取是规则式、可逐条溯源;路线由打分 + beam search 组合得到 |
-| 「是不是把所有组合枚举了一遍?」 | 动态 slot plan 决定类目序列,每个 slot 只取 top-K 候选,再用 **beam search**(宽度 6)剪枝组合,不穷举 |
-| 「推荐理由是不是套话?」 | 每个 POI 的分数由 **8 个特征维度**加权得到,理由直接来自命中的维度,可展开核对 |
-| 「改需求要重算整条吗?」 | 局部 replan:只替换受影响的节点,其余保留,并重新校验 |
-| 「画像和需求会不会错配?」 | 文本先推断画像,手选只作为建议/覆盖;强冲突会展示并默认按文本优先 |
-| 「数据源是否清楚?」 | POI 带 `source/confidence/freshness`,导航 ETA 单独走 mock map leg,页面有数据源证据面板 |
+核心链路如下：
 
-`评测面板` Tab 里可一键复现以上全部结论。
+```text
+parseConstraints
+  -> retrieveCandidates
+  -> scorePOIs
+  -> buildRouteCandidates
+  -> validateRoute
+  -> repair/replan
+  -> explainRoute
+```
 
----
+含义：
 
-## 快速开始
+- `parseConstraints`：抽取区域、时间、同行人数、预算、偏好、规避条件和必去类目。
+- `retrieveCandidates`：从本地 mock POI 中按区域、类目、营业和规避条件召回候选。
+- `scorePOIs`：结合画像、偏好、预算、距离、UGC、人均和排队风险做个性化排序。
+- `buildRouteCandidates`：从前排候选中组合 3-5 个 POI，生成多条候选路线。
+- `validateRoute`：检查营业时间、预算、交通时间、步行距离、排队风险、类目覆盖和 POI 数量。
+- `repair/replan`：发现硬冲突或收到用户修改时，只替换必要节点，尽量保留路线结构。
+- `explainRoute`：把结构化结果转成人能看懂的路线解释、风险提醒和推荐理由。
+
+## 数据源说明
+
+当前数据全部来自本地 mock：
+
+- POI：名称、区域、坐标、类目、营业时间、人均、评分、点评数。
+- UGC：一句摘要，用于解释推荐亮点和风险提醒。
+- 排队：mock queueBase，用于排队风险展示和少排队偏好降权。
+- 地图：mock 距离和 ETA，用于移动成本、步行/车程展示和路线校验。
+
+这些字段按真实服务接口形态组织，后续可替换为：
+
+- 高德开放平台：POI 搜索、地理编码、路径规划、距离矩阵、交通态势。
+- 美团/点评侧生活数据：UGC、排队、人均、团购、评分、营业、门店履约等。
+
+当前没有真实后端、数据库、登录认证或真实第三方 API 调用。
+
+## Mock Backend
+
+项目包含一个独立的最小服务端示例，用于回应“用户、历史路线、POI 搜索、路径估算这些数据源从哪里来”。
 
 ```bash
-# 1. 安装依赖
+cd server
 npm install
-
-# 2. 启动开发服务器(默认 http://localhost:5173)
 npm run dev
+```
 
-# 3. 命令行跑评测(功能断言 + 画像差异)
-npm run eval
+默认地址:
 
-# 4. 生产构建
+```text
+http://localhost:8787
+```
+
+主要接口:
+
+- `GET /health`
+- `POST /auth/register`
+- `POST /auth/login`
+- `GET /me`
+- `GET /history`
+- `POST /history`
+- `GET /poi/search`
+- `POST /route/estimate`
+
+当前前端仍默认使用本地 mock 数据和 localStorage，Vercel Demo 不依赖这个服务端。`server/` 只是数据源抽象层的可运行示例:未来可把 mock POI search 替换为高德 POI/地理编码，把 mock route estimate 替换为高德路径规划/距离矩阵/交通态势，把生活数据替换为美团/点评 UGC、人均、排队、营业、团购等接口。
+
+详细说明见 [docs/API_SERVER.md](docs/API_SERVER.md)。
+
+## 本地运行
+
+```bash
+npm install
+npm run dev
+```
+
+打开 Vite 输出的本地地址，通常是：
+
+```text
+http://localhost:5173
+```
+
+## 验证
+
+```bash
 npm run build
+npm run eval
 ```
 
-环境:Node ≥ 18。纯前端,**无后端、无 API key、无网络依赖**,离线可跑。
+如果本地沙盒环境中 `npm run eval` 因 `tsx` 创建临时 IPC pipe 报 `EPERM`，可使用等价命令：
 
----
-
-## 9 段 Agent Loop
-
-```
-自然语言需求
-   │
-   ▼
-① parseIntent        规则式抽取:区域 / 时间 / 预算 / 人数 / 偏好 / 规避 / 必去类目
-   ▼
-② inferPersona       从「一个人/带娃/朋友/约会」等文本信号推断画像
-   ▼
-③ detectConflict     手选画像 vs 文本画像冲突检测;高置信文本优先
-   ▼
-④ retrieveCandidates 召回:按区域地理半径 + 类目/规避硬过滤,缩小候选集
-   ▼
-⑤ scorePOIs          Mock 推荐模型:8 维特征 → personalized_score + 推荐理由
-   ▼
-⑥ planRoute          slot template + topK + beam search 组合(非穷举)→ 多条候选路线
-   ▼
-⑦ validateConstraints 7 项硬约束校验:营业/预算/交通/步行/排队/类目/数量
-   ▼
-⑧ repairIfNeeded     自动修复 fail 级硬冲突,并保留 repair log
-   ▼
-⑨ explainRoute       基于结构化结果拼装解释 + 风险提示(忠实于实际计算)
-   │
-   ▼
-推荐路线 + 备选方案 + 约束校验面板 + 局部 replan
+```bash
+node --import tsx scripts/runEval.ts
 ```
 
-前端会把 Agent Trace 展开成评委控制台,每段标注输入、输出和实际耗时(全程通常 < 50ms)。
+## Vercel 部署
 
----
+推荐配置：
 
-## 个性化评分(Mock Recommendation Model)
+- Framework Preset: Vite
+- Build Command: `npm run build`
+- Output Directory: `dist`
+- Install Command: `npm install`
 
-每个候选 POI 的 `personalized_score`(0–100)由 8 个维度加权得到:
+不需要配置服务端环境变量，也不需要 API key。
 
-| 维度 | 满分 | 含义 |
-| --- | --- | --- |
-| sceneFit | 26 | 画像场景契合(`persona.sceneWeights` × POI 标签)—— 最重要,个性化的核心 |
-| prefMatch | 18 | 本次输入显式偏好的命中 |
-| quality | 18 | 评分质量 |
-| budgetFit | 12 | 与人均预算的契合度 |
-| popularity | 10 | 热度(评论数 log 归一) |
-| proximity | 8 | 与地理中心的距离 |
-| companionFit | 5 | 同行人数匹配(人多偏热闹、人少偏安静) |
-| ugcBonus | 3 | UGC 正向信号 |
+## 演示建议
 
-> 不同画像的 `sceneWeights` / `categoryPriority` 不同 → 同一个 POI 在不同画像下分数不同 → 召回排序不同 → 路线不同。这是「同输入不同路线」的根因。
+1. 先用一句自然语言生成路线，停留在用户首页，展示时间轴、预算、营业、排队、移动成本和推荐理由。
+2. 切换 mock 用户或编辑偏好，说明偏好会注入规划输入并影响路线。
+3. 使用“临时改一下”做一次局部 replan，强调只替换必要节点。
+4. 打开“查看规划依据”，展示 Agent Loop、候选排序、约束校验、修复记录和数据源抽象层。
+5. 最后运行评测或展示评测结果，证明路线不是预制模板。
 
----
+## 中期验收清单
 
-## 关键设计决策
-
-**1. 先识别真实用户意图,再应用画像。**
-`parseIntent` 不带画像默认值;`inferPersona` 根据「一个人/约会/带娃/朋友」等强信号推断画像。如果手选画像与文本冲突,`ConflictBanner` 会显式提示,避免「一个人需求却按情侣画像规划」。
-
-**2. 约束抽取用规则,而非 LLM。**
-抽取过程可在面板里逐条展示命中的关键词,是「非黑盒、可审计」最直接的证据。词典 + 正则覆盖区域别名、时间(含「X点前」截止语义识别)、预算、人数、正向偏好、规避(「不要太吵」)等。
-
-**3. 组合用 beam search,而非枚举。**
-先由时间/时长/节奏/画像动态推导**类目序列**(slot plan),每个 slot 仅取该类目 top-K,再用宽度 6 的 beam search 按「累计分 − 距离惩罚 − 时段冲突」剪枝。候选规模远小于全排列。
-
-**4. 时段可行性前置过滤。**
-组合阶段估算每个 slot 的预计到达时刻,剔除「到那个点已打烊」「玩到结束超过收尾时间」的候选(如不会把 18:00 关门的美术馆排进 18:30 出发的夜间行程)。
-
-**5. 数据源分层。**
-生活 POI 数据模拟美团/点评侧的评分、UGC、人均、排队风险;导航数据通过 mock map leg 产出距离和 ETA。页面的「数据源证据」面板会展示来源、可信度、更新频率。
-
-**6. 解释忠实于计算结果。**
-`explainRoute` 基于已算出的 stops/checks 拼装文本,不让模型自由编故事 —— 解释里的每句话都能对应到实际数据。
-
-**7. repair 与 replan 分离。**
-系统自动修复的是 fail 级硬冲突,会留下 `RepairLog`;用户多轮修改仍走局部 replan。
-
-**8. replan 只动受影响节点。**
-「换家更便宜的餐厅」只替换 dining 节点;「预算降到 300」只换人均最高的节点并重新校验;「不要太赶」删掉移动成本最高的中间节点。其余结构保留。
-
----
-
-## 数据规模
-
-- **84 个 POI**,覆盖 6 大类:餐饮 / 咖啡茶饮 / 文化艺术 / 娱乐体验 / 购物 / 夜景酒吧
-- **10 个上海区域**:外滩、人民广场、新天地、田子坊、静安寺、徐家汇、陆家嘴、武康路、豫园、大学路
-- **4 个画像**:情侣约会 / 带娃家庭 / 朋友聚会 / 独自闲逛(权重向量各不相同)
-- **8 个预置输入**:覆盖不同区域、时段、人群、预算
-
-> POI 名称为贴近上海真实业态的**虚构数据**(`src/data/pois.ts`),坐标由区域中心加确定性偏移生成。
-
----
-
-## 评测结果
-
-`npm run eval` 输出(在浏览器 `评测面板` 中也可复现):
-
-```
-断言通过:  48/48  (100.0%)
-全过 case:  9/9    (100.0%)
-画像差异:  3/3    (100.0%)  ← 证明非预制模板
-```
-
-- **Part 1**:9 个功能 case,断言路线 ≥3 站、覆盖必去类目、预算达标或被标记、无营业硬冲突、每站有评分与理由、有备选、Agent Trace 完整、画像冲突能纠偏等。
-- **Part 2**:3 个「同输入 × 4 画像」case,验证产出路线两两不同。
-
----
-
-## 30 秒现场演示脚本
-
-1. 先点预置「外滩夜景约会」并选择「情侣约会」画像,点击生成路线。说明页面不是聊天框,而是 Agent 控制台:约束抽取、Agent Trace、数据源证据、候选 POI、时间线、约束校验、方案对比都可见。
-2. 把输入改成「一个人下午想在武康路衡复一带 citywalk...」但保留手选「情侣约会」,点击生成。展示 `ConflictBanner`:系统识别文本强信号为「独自闲逛」并按文本优先,避免错配。
-3. 指向「候选 POI 评分」面板:这里是召回池,每个 POI 都有 `personalized_score`、推荐理由、来源、置信度和 8 维评分拆解。路线只能从这些候选里被组合出来,不是预制模板。
-4. 在多轮修改里输入「换一家评分更高的餐厅」。观察只有餐饮节点被替换,其他节点保持不动,再看约束校验重新刷新。说明这是局部重规划。
-5. 切到「评测面板」点击运行评测,展示 48/48 断言和同输入 4 画像路线差异 100%。最后一句收束:我们让 AI 产出可执行路线对象,不是生成一篇攻略。
-
----
-
-## 项目结构
-
-```
-src/
-├── types/index.ts          单一类型事实源
-├── data/
-│   ├── areas.ts            10 个区域中心点
-│   ├── pois.ts             84 个 POI
-│   ├── personas.ts         4 个画像 + 权重向量
-│   ├── slotPlans.ts        画像 × 时间段 slot 模板
-│   ├── mapData.ts          mock 导航距离/ETA 数据层
-│   └── demoInputs.ts       8 个预置输入
-├── engine/                 纯函数,无 UI 依赖,可单测
-│   ├── agent/
-│   │   ├── inferPersona.ts  画像推断
-│   │   ├── detectConflict.ts 冲突检测
-│   │   ├── repairRoute.ts  自动修复
-│   │   └── agentLoop.ts    9 段 Agent Loop 编排
-│   ├── geo.ts              Haversine 距离 + 步行/地铁时间估算
-│   ├── parseConstraints.ts 规则式约束抽取 + 兼容旧入口
-│   ├── retrieveCandidates.ts ② 召回
-│   ├── scorePOIs.ts        ③ Mock 推荐模型(8 维)
-│   ├── buildRouteCandidates.ts ④ slot plan + beam search
-│   ├── validateRoute.ts    ⑤ 7 项校验
-│   ├── rankRoutes.ts       ⑥ 排序
-│   ├── explainRoute.ts     ⑦ 解释 + 风险
-│   ├── replan.ts           局部重规划
-│   └── pipeline.ts         编排 + 分阶段回调
-├── eval/cases.ts           评测 case + 断言
-├── components/             React UI
-│   ├── CandidatePanel.tsx  候选 POI 评分总览,证明推荐过程可见
-│   └── ...
-└── App.tsx                 主应用(路线规划 / 评测面板 两个 Tab)
-
-scripts/runEval.ts          命令行评测
-```
-
----
-
-## 技术栈
-
-React 18 · TypeScript · Vite · Tailwind CSS。引擎层为纯 TypeScript 函数,与 UI 完全解耦,既能在浏览器跑也能在 Node 里跑评测。
+见 [docs/MID_STAGE_CHECKLIST.md](docs/MID_STAGE_CHECKLIST.md)。

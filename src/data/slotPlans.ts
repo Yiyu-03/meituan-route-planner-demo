@@ -1,4 +1,5 @@
 import type { Category, Constraints, Persona } from '../types';
+import { isQuietIntent, wantsAdultNightlife, wantsNightView } from '../engine/semanticGuards';
 
 const TEMPLATES: Record<string, Category[]> = {
   'couple.afternoon': ['culture', 'cafe', 'dining', 'nightscape'],
@@ -24,6 +25,20 @@ export function slotTemplateFor(c: Constraints, persona: Persona): Category[] {
 
   for (const cat of c.mustCategories) {
     if (!slots.includes(cat)) slots.unshift(cat);
+  }
+
+  const canSoftenEntertainment = slots.includes('entertainment')
+    && !c.mustCategories.includes('entertainment')
+    && (c.prefs.includes('quiet') || (c.budgetPerCapita != null && c.budgetPerCapita <= 320));
+  if (canSoftenEntertainment) {
+    const idx = slots.indexOf('entertainment');
+    slots[idx] = c.startTime >= 17.5 || slots.includes('culture') ? 'cafe' : 'culture';
+  }
+
+  const quietWithoutNightAsk = isQuietIntent(c) && !wantsAdultNightlife(c) && !wantsNightView(c);
+  if (quietWithoutNightAsk && !c.mustCategories.includes('nightscape')) {
+    const idx = slots.indexOf('nightscape');
+    if (idx >= 0) slots[idx] = slots.includes('culture') ? 'shopping' : 'culture';
   }
 
   if (c.avoidCategories.length) {
@@ -52,4 +67,3 @@ export function slotTemplateFor(c: Constraints, persona: Persona): Category[] {
 
   return slots.slice(0, n);
 }
-

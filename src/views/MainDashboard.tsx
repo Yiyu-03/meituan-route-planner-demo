@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -10,8 +10,11 @@ import {
   ChevronRight,
   Clock3,
   Coffee,
+  Database,
   Footprints,
+  History,
   Landmark,
+  LogOut,
   MapPinned,
   Navigation,
   NotebookTabs,
@@ -22,20 +25,41 @@ import {
   Star,
   Ticket,
   Utensils,
+  UserCircle,
   WalletCards,
+  X,
 } from 'lucide-react';
 import { DEMO_INPUTS, type DemoInput } from '../data/demoInputs';
 import { PERSONA_MAP, PERSONAS } from '../data/personas';
 import { runAgentLoop } from '../engine/agent/agentLoop';
 import { applyRefine, parseRefine } from '../engine/replan';
-import type { Category, CheckStatus, Persona, PlanResult, Route, RouteStop } from '../types';
+import type { Category, CheckStatus, Constraints, Persona, PlanResult, Route, RouteStop } from '../types';
 import { CATEGORY_LABEL } from '../types';
 import { AgentTrace } from '../components/AgentTrace';
 import { ScoreBreakdownBars, fmtH } from '../components/ui';
-import { budgetVerdict, formatAreas, formatTags, lifeTips, openingNote, routeAdvantage } from '../lib/display';
+import {
+  budgetVerdict,
+  formatAreas,
+  formatDistance,
+  formatLegMode,
+  formatTags,
+  lifeTips,
+  openingNote,
+  routeAdvantage,
+  travelSummary,
+} from '../lib/display';
 import { buildReplanChips, type ReplanChip } from '../lib/replanChips';
 
 type PersonaPick = 'auto' | string;
+type UserPreferenceKey = 'quiet' | 'budget' | 'avoidQueue' | 'family';
+
+interface UserProfile {
+  userId: string;
+  nickname: string;
+  prefs: UserPreferenceKey[];
+  budgetPref: number | null;
+  updatedAt: number;
+}
 
 interface PlannerSession {
   id: string;
@@ -48,20 +72,127 @@ interface PlannerSession {
   activeRouteIdx: number;
   changedIds: string[];
   toast: string;
+  ownerId: string;
+  profileNote?: string;
 }
 
 const NOTE_COLORS: PlannerSession['color'][] = ['gold', 'leaf', 'coral', 'sky'];
+const USER_STORAGE_KEY = 'meituan-route-demo-user-v1';
+const HISTORY_STORAGE_KEY = 'meituan-route-demo-history-v1';
+const ANON_USER_ID = 'anonymous-local-user';
+
+const USER_PREF_OPTIONS: { key: UserPreferenceKey; label: string; planningText: string }[] = [
+  { key: 'quiet', label: '安静', planningText: '偏好安静不吵' },
+  { key: 'budget', label: '省钱', planningText: '希望便宜实惠性价比高' },
+  { key: 'avoidQueue', label: '少排队', planningText: '别排队太久尽量少等位' },
+  { key: 'family', label: '亲子友好', planningText: '亲子友好适合孩子' },
+];
 
 const defaultPrompt =
   '朋友来上海，下午在新天地附近逛逛，3点想找个安静地方接电话，晚上吃饭别排队太久，人均300内';
 
-function createPlan(input: string, personaPick: PersonaPick): PlanResult {
-  const manualPersona = personaPick === 'auto' ? undefined : PERSONA_MAP[personaPick];
-  return runAgentLoop(input, manualPersona);
+function hashUserId(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return `mock-user-${hash.toString(36)}`;
 }
 
-function makeSession(input: string, personaPick: PersonaPick, index: number, label?: string): PlannerSession {
-  const plan = createPlan(input, personaPick);
+function historyKeyForUser(userId: string): string {
+  return `${HISTORY_STORAGE_KEY}:${userId || ANON_USER_ID}`;
+}
+
+function profileUserId(profile: UserProfile | null): string {
+  return profile?.userId ?? ANON_USER_ID;
+}
+
+function loadStoredUser(): UserProfile | null {
+  try {
+    const raw = window.localStorage.getItem(USER_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<UserProfile>;
+    if (!parsed.nickname) return null;
+    const nickname = parsed.nickname;
+    return {
+      userId: parsed.userId ?? hashUserId(nickname),
+      nickname,
+      prefs: (parsed.prefs ?? []).filter((p): p is UserPreferenceKey =>
+        USER_PREF_OPTIONS.some((opt) => opt.key === p),
+      ),
+      budgetPref: typeof parsed.budgetPref === 'number' ? parsed.budgetPref : null,
+      updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function loadStoredSessions(userId: string): PlannerSession[] {
+  try {
+    const raw = window.localStorage.getItem(historyKeyForUser(userId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as PlannerSession[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => item?.id && item?.plan?.routes?.length)
+      .map((item) => ({ ...item, ownerId: item.ownerId ?? userId }))
+      .filter((item) => item.ownerId === userId)
+      .slice(0, 6);
+  } catch {
+    return [];
+  }
+}
+
+function saveStoredSessions(userId: string, sessions: PlannerSession[]) {
+  window.localStorage.setItem(historyKeyForUser(userId), JSON.stringify(sessions.slice(0, 6)));
+}
+
+function seedSessions(profile: UserProfile | null): PlannerSession[] {
+  const ownerId = profileUserId(profile);
+  const stored = loadStoredSessions(ownerId);
+  if (stored.length) return stored;
+  return [
+    makeSession(defaultPrompt, 'auto', 0, '朋友·新天地下午', profile, ownerId),
+    ...DEMO_INPUTS.slice(1, 4).map((demo, index) => demoSession(demo, index + 1, profile, ownerId)),
+  ];
+}
+
+function userPreferenceNote(profile: UserProfile | null): string {
+  if (!profile) return '';
+  const labels = profile.prefs
+    .map((pref) => USER_PREF_OPTIONS.find((opt) => opt.key === pref)?.label)
+    .filter(Boolean);
+  if (profile.budgetPref != null) labels.push(`人均约¥${profile.budgetPref}`);
+  return labels.length ? labels.join('、') : '暂无长期偏好';
+}
+
+function applyUserProfileToInput(input: string, profile: UserProfile | null): string {
+  if (!profile) return input;
+  const bits = profile.prefs
+    .map((pref) => USER_PREF_OPTIONS.find((opt) => opt.key === pref)?.planningText)
+    .filter(Boolean);
+  if (profile.budgetPref != null && !/(人均|预算|以内|以下|左右|块|元)/.test(input)) {
+    bits.push(`人均预算${profile.budgetPref}左右`);
+  }
+  if (!bits.length) return input;
+  return `${input}。用户长期偏好:${bits.join('、')}`;
+}
+
+function createPlan(input: string, personaPick: PersonaPick, profile: UserProfile | null = null): PlanResult {
+  const manualPersona = personaPick === 'auto' ? undefined : PERSONA_MAP[personaPick];
+  return runAgentLoop(applyUserProfileToInput(input, profile), manualPersona);
+}
+
+function makeSession(
+  input: string,
+  personaPick: PersonaPick,
+  index: number,
+  label?: string,
+  profile: UserProfile | null = null,
+  ownerId = profileUserId(profile),
+): PlannerSession {
+  const plan = createPlan(input, personaPick, profile);
   const route = plan.routes[0];
   return {
     id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
@@ -73,12 +204,19 @@ function makeSession(input: string, personaPick: PersonaPick, index: number, lab
     plan,
     activeRouteIdx: 0,
     changedIds: [],
-    toast: '已生成一页新的旅行路线，所有站点都经过预算、营业、距离和排队校验。',
+    toast: '',
+    ownerId,
+    profileNote: userPreferenceNote(profile),
   };
 }
 
-function demoSession(demo: DemoInput, index: number): PlannerSession {
-  return makeSession(demo.text, demo.suggestPersona ?? 'auto', index, demo.label);
+function demoSession(
+  demo: DemoInput,
+  index: number,
+  profile: UserProfile | null = null,
+  ownerId = profileUserId(profile),
+): PlannerSession {
+  return makeSession(demo.text, demo.suggestPersona ?? 'auto', index, demo.label, profile, ownerId);
 }
 
 function titleFromPlan(plan: PlanResult): string {
@@ -139,8 +277,8 @@ function routeRisk(route: Route): { label: string; tone: 'green' | 'amber' | 're
   const fail = route.checks.some((c) => c.status === 'fail');
   const warn = route.checks.some((c) => c.status === 'warn');
   if (fail) return { label: '需调整', tone: 'red' };
-  if (warn) return { label: '轻风险', tone: 'amber' };
-  return { label: '低风险', tone: 'green' };
+  if (warn) return { label: '有提醒', tone: 'amber' };
+  return { label: '行程宽松', tone: 'green' };
 }
 
 function riskClass(tone: 'green' | 'amber' | 'red') {
@@ -182,18 +320,25 @@ function routeLabel(route: Route, best: Route, index: number) {
 }
 
 export function MainDashboard() {
-  const [sessions, setSessions] = useState<PlannerSession[]>(() =>
-    [
-      makeSession(defaultPrompt, 'auto', 0, '朋友·新天地下午'),
-      ...DEMO_INPUTS.slice(1, 4).map((demo, index) => demoSession(demo, index + 1)),
-    ],
-  );
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(() => loadStoredUser());
+  const [userModalOpen, setUserModalOpen] = useState(false);
+  const [historyOwnerId, setHistoryOwnerId] = useState(() => profileUserId(loadStoredUser()));
+  const [sessions, setSessions] = useState<PlannerSession[]>(() => seedSessions(loadStoredUser()));
   const [activeSessionId, setActiveSessionId] = useState(() => sessions[0]?.id ?? '');
   const [draft, setDraft] = useState(defaultPrompt);
   const [personaPick, setPersonaPick] = useState<PersonaPick>('auto');
   const [judgeMode, setJudgeMode] = useState(false);
   const [isPlanning, setIsPlanning] = useState(false);
   const [refineText, setRefineText] = useState('');
+
+  useEffect(() => {
+    saveStoredSessions(historyOwnerId, sessions);
+  }, [sessions, historyOwnerId]);
+
+  useEffect(() => {
+    if (userProfile) window.localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(userProfile));
+    else window.localStorage.removeItem(USER_STORAGE_KEY);
+  }, [userProfile]);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
   const activeRoute = safeRoute(activeSession);
@@ -206,8 +351,32 @@ export function MainDashboard() {
     [activeRoute, activeSession.plan.constraints],
   );
 
+  useEffect(() => {
+    if (!activeSession) return;
+    setDraft(activeSession.input);
+    setPersonaPick(activeSession.personaPick);
+  }, [activeSession?.id]);
+
   const updateActiveSession = (updater: (session: PlannerSession) => PlannerSession) => {
     setSessions((prev) => prev.map((item) => (item.id === activeSession.id ? updater(item) : item)));
+  };
+
+  const switchToSessions = (nextSessions: PlannerSession[]) => {
+    const first = nextSessions[0];
+    setSessions(nextSessions);
+    setActiveSessionId(first?.id ?? '');
+    setDraft(first?.input ?? defaultPrompt);
+    setPersonaPick(first?.personaPick ?? 'auto');
+    setRefineText('');
+  };
+
+  const switchUserProfile = (profile: UserProfile | null) => {
+    saveStoredSessions(historyOwnerId, sessions);
+    const nextOwnerId = profileUserId(profile);
+    const nextSessions = seedSessions(profile);
+    setUserProfile(profile);
+    setHistoryOwnerId(nextOwnerId);
+    switchToSessions(nextSessions);
   };
 
   const submitPlan = (event?: FormEvent) => {
@@ -216,13 +385,30 @@ export function MainDashboard() {
     if (!text || isPlanning) return;
     setIsPlanning(true);
     window.setTimeout(() => {
-      const next = makeSession(text, personaPick, sessions.length);
+      const next = makeSession(text, personaPick, sessions.length, undefined, userProfile, historyOwnerId);
       setSessions((prev) => [next, ...prev].slice(0, 6));
       setActiveSessionId(next.id);
       setDraft(next.input);
       setPersonaPick(next.personaPick);
       setIsPlanning(false);
     }, 260);
+  };
+
+  const loadDemo = (demo: DemoInput) => {
+    const pick = demo.suggestPersona ?? 'auto';
+    const profileNote = userPreferenceNote(userProfile);
+    const existing = sessions.find((item) =>
+      item.input === demo.text && item.personaPick === pick && (item.profileNote ?? '') === profileNote,
+    );
+    setDraft(demo.text);
+    setPersonaPick(pick);
+    if (existing) {
+      setActiveSessionId(existing.id);
+      return;
+    }
+    const next = makeSession(demo.text, pick, sessions.length, demo.label, userProfile, historyOwnerId);
+    setSessions((prev) => [next, ...prev].slice(0, 6));
+    setActiveSessionId(next.id);
   };
 
   const pickSession = (id: string) => {
@@ -279,13 +465,16 @@ export function MainDashboard() {
             <h1 className="text-[24px] font-semibold leading-tight sm:text-[30px]">AI 本地路线旅行书</h1>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => setJudgeMode((v) => !v)}
-          className={`rounded-lg border px-3 py-2 text-[13px] font-semibold ${judgeMode ? 'border-[#201B16] bg-[#201B16] text-white' : 'border-[#D9CBB6] bg-[#FFF9ED] text-[#625545]'}`}
-        >
-          {judgeMode ? '收起规划依据' : '查看规划依据'}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <UserStatus profile={userProfile} onOpen={() => setUserModalOpen(true)} onLogout={() => switchUserProfile(null)} />
+          <button
+            type="button"
+            onClick={() => setJudgeMode((v) => !v)}
+            className={`rounded-lg border px-3 py-2 text-[13px] font-semibold ${judgeMode ? 'border-[#201B16] bg-[#201B16] text-white' : 'border-[#D9CBB6] bg-[#FFF9ED] text-[#625545]'}`}
+          >
+            {judgeMode ? '收起规划依据' : '查看规划依据'}
+          </button>
+        </div>
       </header>
 
       <main className="mx-auto grid max-w-[1480px] gap-3 lg:grid-cols-[minmax(0,1fr)_118px]">
@@ -310,6 +499,11 @@ export function MainDashboard() {
                     当前查看：{sessionTitleFromInput(activeSession.input)}
                   </span>
                 </div>
+                {activeSession.profileNote && activeSession.profileNote !== '暂无长期偏好' && (
+                  <p className="mb-2 rounded-lg border border-[#E2D3BD] bg-[#FFFDF8] px-2 py-1.5 text-[11px] leading-5 text-[#6F604E]">
+                    已带入用户偏好：{activeSession.profileNote}
+                  </p>
+                )}
                 <div className="flex flex-wrap gap-1.5">
                   {understood.map((chip) => <PaperChip key={chip}>{chip}</PaperChip>)}
                 </div>
@@ -347,10 +541,7 @@ export function MainDashboard() {
                   <button
                     key={demo.id}
                     type="button"
-                    onClick={() => {
-                      setDraft(demo.text);
-                      setPersonaPick('auto');
-                    }}
+                    onClick={() => loadDemo(demo)}
                     className="group flex w-full items-start justify-between gap-3 rounded-lg border border-[#E2D3BD] bg-[#FFFDF8] px-3 py-2 text-left transition hover:border-[#201B16]"
                   >
                     <span>
@@ -375,10 +566,15 @@ export function MainDashboard() {
                   </div>
                 )}
 
-                <RouteJournalTimeline route={activeRoute} changedIds={activeSession.changedIds} />
+                <RouteJournalTimeline
+                  route={activeRoute}
+                  constraints={activeSession.plan.constraints}
+                  changedIds={activeSession.changedIds}
+                />
 
                 <RouteAlternatives
                   routes={activeSession.plan.routes}
+                  budget={activeSession.plan.constraints.budgetPerCapita}
                   activeRouteIdx={activeSession.activeRouteIdx}
                   onPick={applyRoutePick}
                 />
@@ -406,6 +602,17 @@ export function MainDashboard() {
 
       {judgeMode && (
         <JudgeAppendix session={activeSession} route={activeRoute} />
+      )}
+
+      {userModalOpen && (
+        <UserProfileModal
+          profile={userProfile}
+          onClose={() => setUserModalOpen(false)}
+          onSave={(profile) => {
+            switchUserProfile(profile);
+            setUserModalOpen(false);
+          }}
+        />
       )}
     </div>
   );
@@ -443,6 +650,137 @@ function PaperChip({ children }: { children: ReactNode }) {
   );
 }
 
+function UserStatus({
+  profile, onOpen, onLogout,
+}: {
+  profile: UserProfile | null;
+  onOpen: () => void;
+  onLogout: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-[#D9CBB6] bg-[#FFF9ED] px-2 py-1.5">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="inline-flex items-center gap-2 text-left text-[12px] font-semibold text-[#4F4233]"
+      >
+        <UserCircle size={17} strokeWidth={1.6} />
+          <span>
+          <span className="block leading-4">{profile ? profile.nickname : '未登录'}</span>
+          <span className="block max-w-[180px] truncate text-[10px] font-medium text-[#8A765F]">
+            {profile ? userPreferenceNote(profile) : '本地访客 · 独立规划记录'}
+          </span>
+        </span>
+      </button>
+      {profile && (
+        <button
+          type="button"
+          onClick={onLogout}
+          className="rounded-md p-1 text-[#8A765F] transition hover:bg-[#EFE3D0] hover:text-[#201B16]"
+          aria-label="退出本地登录"
+          title="退出本地登录"
+        >
+          <LogOut size={14} strokeWidth={1.7} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function UserProfileModal({
+  profile, onClose, onSave,
+}: {
+  profile: UserProfile | null;
+  onClose: () => void;
+  onSave: (profile: UserProfile) => void;
+}) {
+  const [nickname, setNickname] = useState(profile?.nickname ?? '');
+  const [budgetPref, setBudgetPref] = useState(profile?.budgetPref != null ? String(profile.budgetPref) : '');
+  const [prefs, setPrefs] = useState<UserPreferenceKey[]>(profile?.prefs ?? ['quiet', 'avoidQueue']);
+
+  const togglePref = (key: UserPreferenceKey) => {
+    setPrefs((prev) => (prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]));
+  };
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const trimmed = nickname.trim() || '演示用户';
+    const budget = budgetPref.trim() ? Number(budgetPref.trim()) : null;
+    onSave({
+      userId: profile?.nickname.trim() === trimmed ? profile.userId : hashUserId(trimmed),
+      nickname: trimmed,
+      prefs,
+      budgetPref: Number.isFinite(budget) && budget != null ? budget : null,
+      updatedAt: Date.now(),
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#201B16]/35 px-4 py-6">
+      <form onSubmit={submit} className="w-full max-w-md rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] p-5 shadow-[0_18px_46px_rgba(32,27,22,.22)]">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[12px] font-semibold tracking-[0.18em] text-[#8A765F]">本地用户</p>
+            <h2 className="text-[22px] font-semibold text-[#201B16]">登录 / 注册</h2>
+            <p className="mt-1 text-[12px] leading-5 text-[#776755]">仅保存到 localStorage，用于演示 session 和个性化偏好。</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-md p-1 text-[#8A765F] transition hover:bg-[#F7F0E2]">
+            <X size={18} strokeWidth={1.7} />
+          </button>
+        </div>
+
+        <label className="mb-3 block">
+          <span className="mb-1 block text-[12px] font-semibold text-[#4F4233]">昵称</span>
+          <input
+            value={nickname}
+            onChange={(event) => setNickname(event.target.value)}
+            className="w-full rounded-lg border border-[#D9CBB6] bg-[#FFF9ED] px-3 py-2 text-[14px] outline-none focus:border-[#201B16]"
+            placeholder="比如：小王"
+          />
+        </label>
+
+        <label className="mb-3 block">
+          <span className="mb-1 block text-[12px] font-semibold text-[#4F4233]">预算偏好</span>
+          <input
+            value={budgetPref}
+            onChange={(event) => setBudgetPref(event.target.value.replace(/[^\d]/g, '').slice(0, 4))}
+            className="w-full rounded-lg border border-[#D9CBB6] bg-[#FFF9ED] px-3 py-2 text-[14px] outline-none focus:border-[#201B16]"
+            placeholder="可选，例如 200"
+            inputMode="numeric"
+          />
+        </label>
+
+        <div className="mb-4">
+          <span className="mb-2 block text-[12px] font-semibold text-[#4F4233]">出行偏好</span>
+          <div className="grid grid-cols-2 gap-2">
+            {USER_PREF_OPTIONS.map((option) => {
+              const active = prefs.includes(option.key);
+              return (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => togglePref(option.key)}
+                  className={`rounded-lg border px-3 py-2 text-left text-[13px] font-semibold transition ${
+                    active
+                      ? 'border-[#201B16] bg-[#F7C948]/35 text-[#201B16]'
+                      : 'border-[#E2D3BD] bg-[#FFF9ED] text-[#6F604E] hover:border-[#201B16]'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <button type="submit" className="h-11 w-full rounded-lg bg-[#201B16] text-[14px] font-semibold text-white">
+          保存到本地并使用
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function RouteCover({
   route, persona, risk, budget,
 }: {
@@ -451,6 +789,7 @@ function RouteCover({
   risk: { label: string; tone: 'green' | 'amber' | 'red' };
   budget: { value: string; tone: 'neutral' | 'green' | 'amber' | 'red'; helper: string };
 }) {
+  const movement = travelSummary(route);
   return (
     <section className="relative overflow-hidden rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] p-4 shadow-[0_10px_24px_rgba(68,50,31,.08)]">
       <div className="travel-route-stamp">拿来就走</div>
@@ -468,8 +807,8 @@ function RouteCover({
       <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <CoverMetric icon={Clock3} label="总时长" value={`${fmtH(route.stops[0].arrive)}-${fmtH(route.endTime)}`} />
         <CoverMetric icon={WalletCards} label="预算" value={budget.value} helper={budget.helper} tone={budget.tone} />
-        <CoverMetric icon={Footprints} label="步行" value={`${route.totalWalkMin} min`} />
-        <CoverMetric icon={ShieldCheck} label="风险" value={risk.label} tone={risk.tone} />
+        <CoverMetric icon={Footprints} label={movement.label} value={movement.value} />
+        <CoverMetric icon={ShieldCheck} label="提醒" value={risk.label} tone={risk.tone} />
       </div>
     </section>
   );
@@ -495,7 +834,13 @@ function CoverMetric({
   );
 }
 
-function RouteJournalTimeline({ route, changedIds }: { route: Route; changedIds: string[] }) {
+function RouteJournalTimeline({
+  route, constraints, changedIds,
+}: {
+  route: Route;
+  constraints: Constraints;
+  changedIds: string[];
+}) {
   return (
     <section className="rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] p-4">
       <div className="mb-4 flex items-center justify-between gap-3">
@@ -514,6 +859,7 @@ function RouteJournalTimeline({ route, changedIds }: { route: Route; changedIds:
           <StopCard
             key={`${stop.scored.poi.id}-${index}`}
             stop={stop}
+            constraints={constraints}
             index={index}
             isChanged={changedIds.includes(stop.scored.poi.id)}
           />
@@ -524,9 +870,10 @@ function RouteJournalTimeline({ route, changedIds }: { route: Route; changedIds:
 }
 
 function StopCard({
-  stop, index, isChanged,
+  stop, constraints, index, isChanged,
 }: {
   stop: RouteStop;
+  constraints: Constraints;
   index: number;
   isChanged: boolean;
 }) {
@@ -534,6 +881,7 @@ function StopCard({
   const Icon = categoryIcon(poi.category);
   const queue = queueText(poi.queueBase);
   const tips = lifeTips(poi, stop.arrive);
+  const caution = tips.caution ?? (poi.queueBase >= 0.45 ? queue.hint : undefined);
   return (
     <article className="relative pl-12">
       <div className="absolute left-0 top-4 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-[#D8C6A8] bg-[#FFFDF8] text-[#201B16] shadow-sm">
@@ -543,7 +891,7 @@ function StopCard({
       {index > 0 && stop.legFromPrev && (
         <div className="mb-2 flex items-center gap-2 rounded-lg border border-[#E6D8C3] bg-[#FBF4E7] px-3 py-2 text-[12px] text-[#6F604E]">
           <Navigation size={14} strokeWidth={1.6} />
-          从上一站{stop.legFromPrev.mode === 'walk' ? '步行' : '地铁/打车'} {stop.legFromPrev.minutes} 分钟 · {stop.legFromPrev.distM}m
+          上一站 → 本站：{formatLegMode(stop.legFromPrev.mode)} {stop.legFromPrev.minutes} 分钟 · {formatDistance(stop.legFromPrev.distM)}
         </div>
       )}
 
@@ -579,15 +927,15 @@ function StopCard({
         </div>
 
         <p className="mt-3 rounded-lg border border-[#E9D7B4] bg-[#FFF8E8] px-3 py-2 text-[13px] leading-6 text-[#5F4D36]">
-          {stop.scored.reasons[0] ?? '符合本次路线约束'}。{compareSentence(stop)}
+          {stop.scored.reasons[0] ?? '符合本次路线约束'}。{compareSentence(stop, constraints)}
         </p>
 
         <div className="mt-2 rounded-lg bg-[#F7F0E2] px-3 py-2 text-[12px] leading-5 text-[#665744]">
           <b>亮点：</b>{tips.highlight}
-          {(tips.caution ?? queue.hint) && (
+          {caution && (
             <>
               <span className="mx-1 text-[#B09C80]">｜</span>
-              <b>提醒：</b>{tips.caution ?? queue.hint}
+              <b>提醒：</b>{caution}
             </>
           )}
         </div>
@@ -610,13 +958,17 @@ function StopCard({
   );
 }
 
-function compareSentence(stop: RouteStop) {
+function compareSentence(stop: RouteStop, constraints: Constraints) {
   const tags = stop.scored.poi.sceneTags;
-  if (tags.includes('quiet')) return '比同区域热闹店更安静，适合聊天或接电话';
-  if (tags.includes('photo')) return '比普通打卡点更容易出片，停留成本也低';
+  const raw = constraints.raw;
+  const askedPhone = /接电话|打电话|办公|开会/.test(raw);
+  const askedQuiet = constraints.prefs.includes('quiet') || /安静|清净|不吵|别太吵|不要太吵/.test(raw);
+  if (tags.includes('quiet') && askedPhone) return '比同区域热闹店更安静，适合短暂停下来接电话';
+  if (tags.includes('quiet') && askedQuiet) return '比同区域热闹店更安静，适合慢慢聊';
+  if (tags.includes('photo')) return '比附近普通打卡点更容易出片';
   if (tags.includes('family')) return '比夜生活点更适合带娃，收尾更稳';
-  if (tags.includes('budget')) return '比同类高价选择更省预算';
-  return '比只按评分排序更贴合本次出行节奏';
+  if (tags.includes('budget')) return '比附近同类更实惠';
+  return '更贴合这次出行节奏';
 }
 
 function MockAction({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
@@ -632,9 +984,10 @@ function MockAction({ icon: Icon, label }: { icon: LucideIcon; label: string }) 
 }
 
 function RouteAlternatives({
-  routes, activeRouteIdx, onPick,
+  routes, budget, activeRouteIdx, onPick,
 }: {
   routes: Route[];
+  budget: number | null;
   activeRouteIdx: number;
   onPick: (idx: number) => void;
 }) {
@@ -647,6 +1000,12 @@ function RouteAlternatives({
         {routes.slice(0, 4).map((route, idx) => {
           const active = idx === activeRouteIdx;
           const advantage = routeAdvantage(routes, idx);
+          const budgetInfo = budgetVerdict(route.totalCost, budget);
+          const budgetCls = budgetInfo.tone === 'ok'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            : budgetInfo.tone === 'warn'
+              ? 'border-amber-200 bg-amber-50 text-amber-800'
+              : 'border-rose-200 bg-rose-50 text-rose-800';
           return (
             <button
               key={route.id}
@@ -658,15 +1017,16 @@ function RouteAlternatives({
             >
               <div className="mb-1 flex items-center justify-between gap-2">
                 <span className="font-semibold text-[#201B16]">{advantage.label}</span>
-                <span className="tnum text-[12px] text-[#776755]">综合 {route.score.toFixed(1)}</span>
+                <span className={`tnum rounded-full border px-2 py-0.5 text-[11px] font-semibold ${budgetCls}`}>
+                  {budgetInfo.display}
+                </span>
               </div>
               <p className="mb-1 text-[12px] text-[#8A765F]">{advantage.note}</p>
               <p className="line-clamp-2 text-[12px] leading-5 text-[#6F604E]">
                 {route.stops.map((s) => s.scored.poi.name).join(' → ')}
               </p>
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-[#776755]">
-                <span>¥{route.totalCost}/人</span>
-                <span>步行 {route.totalWalkMin}min</span>
+                <span>{travelSummary(route).value}</span>
                 <span>{fmtH(route.endTime)} 结束</span>
               </div>
             </button>
@@ -730,6 +1090,7 @@ function ReplanCard({
 
 function TripTipsCard({ route }: { route: Route }) {
   const checks = importantChecks(route);
+  const visibleChecks = checks.filter((check) => check.status !== 'pass');
   return (
     <section className="rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] p-4">
       <div className="mb-3 flex items-center gap-2">
@@ -737,7 +1098,12 @@ function TripTipsCard({ route }: { route: Route }) {
         <h3 className="font-semibold text-[#201B16]">出行提醒</h3>
       </div>
       <div className="space-y-2">
-        {checks.map((check) => (
+        {visibleChecks.length === 0 && (
+          <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] leading-5 text-emerald-800">
+            营业、预算和排队已检查，目前没有明显提醒。
+          </p>
+        )}
+        {visibleChecks.map((check) => (
           <div key={check.key} className="rounded-lg border border-[#E4D5BE] bg-[#FFF9ED] p-2">
             <div className="mb-1 flex items-center justify-between gap-2">
               <span className="text-[12px] font-semibold text-[#201B16]">{check.label}</span>
@@ -748,6 +1114,22 @@ function TripTipsCard({ route }: { route: Route }) {
             <p className="text-[11px] leading-4 text-[#776755]">{check.detail}</p>
           </div>
         ))}
+        <details>
+          <summary className="cursor-pointer text-[12px] font-semibold text-[#776755]">查看完整校验</summary>
+          <div className="mt-2 space-y-2">
+            {checks.map((check) => (
+              <div key={check.key} className="rounded-lg border border-[#E4D5BE] bg-[#FFF9ED] p-2">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-[12px] font-semibold text-[#201B16]">{check.label}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusClass(check.status)}`}>
+                    {checkMark(check.status)}
+                  </span>
+                </div>
+                <p className="text-[11px] leading-4 text-[#776755]">{check.detail}</p>
+              </div>
+            ))}
+          </div>
+        </details>
       </div>
     </section>
   );
@@ -762,6 +1144,10 @@ function SessionNotes({
 }) {
   return (
     <aside className="session-notes flex gap-2 overflow-x-auto pb-2 lg:sticky lg:top-20 lg:block lg:space-y-3 lg:overflow-visible lg:pb-0">
+      <div className="hidden rounded-lg border border-[#D9CBB6] bg-[#FFF9ED] px-3 py-2 text-[12px] font-semibold text-[#665744] lg:flex lg:items-center lg:gap-2">
+        <History size={15} strokeWidth={1.6} />
+        规划记录
+      </div>
       {sessions.map((session, index) => {
         const active = session.id === activeSessionId;
         const route = safeRoute(session);
@@ -778,6 +1164,11 @@ function SessionNotes({
             <span className="mt-1 block text-[11px] leading-4 opacity-75">
               ¥{route.totalCost} · {route.stops.length}站
             </span>
+            {session.profileNote && session.profileNote !== '暂无长期偏好' && (
+              <span className="mt-1 line-clamp-2 block text-[10px] leading-4 opacity-70">
+                偏好：{session.profileNote}
+              </span>
+            )}
           </button>
         );
       })}
@@ -795,13 +1186,15 @@ function JudgeAppendix({ session, route }: { session: PlannerSession; route: Rou
           <h2 className="text-[22px] font-semibold text-[#201B16]">动态链路与校验记录</h2>
         </div>
         <span className="rounded-full border border-[#D8C6A8] bg-[#F7F0E2] px-3 py-1 text-[12px] font-medium text-[#665744]">
-          parse → retrieve → score → build → validate → repair → explain
+          parseConstraints → retrieveCandidates → scorePOIs → buildRouteCandidates → validateRoute → repair/replan → explainRoute
         </span>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <AgentTrace trace={plan.agentTrace ?? []} />
         <div className="space-y-4">
+          <DataSourceCard />
+
           <div className="rounded-lg border border-[#E4D5BE] bg-[#FFF9ED] p-3">
             <div className="mb-2 flex items-center gap-2">
               <SlidersHorizontal size={16} strokeWidth={1.6} />
@@ -844,5 +1237,29 @@ function JudgeAppendix({ session, route }: { session: PlannerSession; route: Rou
         </div>
       </div>
     </section>
+  );
+}
+
+function DataSourceCard() {
+  return (
+    <div className="rounded-lg border border-[#E4D5BE] bg-[#FFF9ED] p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <Database size={16} strokeWidth={1.6} />
+        <h3 className="font-semibold">数据来源与当前能力</h3>
+      </div>
+      <div className="space-y-2 text-[12px] leading-5 text-[#665744]">
+        <p>
+          当前 Demo 采用数据源抽象层:本地 mock POI、mock UGC、人均、排队、评分、营业与地图距离字段，
+          字段形态按真实服务接口组织,再由规则化 Agent Loop 完成规划。
+        </p>
+        <p>
+          链路为 parseConstraints → retrieveCandidates → scorePOIs → buildRouteCandidates → validateRoute → repair/replan → explainRoute。
+        </p>
+        <p>
+          发布到真实业务时,可替换为高德开放平台 POI 搜索、地理编码、路径规划、距离矩阵与交通态势 API,
+          以及美团/点评侧 UGC、排队、人均、团购和门店履约数据。
+        </p>
+      </div>
+    </div>
   );
 }

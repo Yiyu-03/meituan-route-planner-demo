@@ -43,7 +43,7 @@ const S: Seed[] = [
   { id:'d13', name:'陆家嘴空中粤菜', cat:'dining', area:'lujiazui', rating:4.7, reviews:4900, per:420, open:11, close:22, dur:100, tags:['upscale','romantic','foodie'], ugc:'高层落地窗看江景,商务宴请', queue:0.45, dx:-0.002, dy:-0.003 },
   { id:'d14', name:'江景小龙虾', cat:'dining', area:'lujiazui', rating:4.3, reviews:10200, per:180, open:16, close:25.5, dur:90, tags:['lively','nightlife','foodie','local'], ugc:'夜宵剥虾配啤酒,江风很爽', queue:0.6, dx:0.003, dy:0.002 },
   { id:'d15', name:'田子坊创意菜', cat:'dining', area:'tianzifang', rating:4.4, reviews:5600, per:140, open:11, close:22, dur:80, tags:['trendy','photo','romantic'], ugc:'融合菜摆盘精致,巷子里的小惊喜', queue:0.55, dx:-0.003, dy:0.003 },
-  { id:'d16', name:'打浦桥家常面馆', cat:'dining', area:'tianzifang', rating:4.5, reviews:9100, per:30, open:7, close:21, dur:30, tags:['budget','local','foodie'], ugc:'葱油拌面便宜大碗,街坊最爱', queue:0.5, dx:0.002, dy:-0.002 },
+  { id:'d16', name:'愚园路家常面馆', cat:'dining', area:'jingan', rating:4.5, reviews:9100, per:30, open:7, close:21, dur:30, tags:['budget','local','foodie'], ugc:'葱油拌面便宜大碗,街坊最爱', queue:0.5, dx:0.002, dy:-0.002 },
   { id:'d17', name:'武康路精致小馆', cat:'dining', area:'wukang', rating:4.6, reviews:3800, per:240, open:11.5, close:21.5, dur:90, tags:['romantic','upscale','quiet','photo'], ugc:'梧桐树下的小资约会地', queue:0.4, dx:-0.004, dy:0.002 },
   { id:'d18', name:'亲子主题餐厅', cat:'dining', area:'xujiahui', rating:4.2, reviews:6200, per:110, open:10.5, close:21, dur:80, tags:['family','lively','budget'], ugc:'有儿童区和宝宝餐,带娃省心', queue:0.5, dx:0.002, dy:0.004 },
   { id:'d19', name:'新天地意大利餐厅', cat:'dining', area:'xintiandi', rating:4.5, reviews:4400, per:300, open:11.5, close:23, dur:100, tags:['romantic','upscale','trendy','photo'], ugc:'手工意面正宗,氛围浪漫', queue:0.45, dx:0.003, dy:-0.002 },

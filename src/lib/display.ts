@@ -128,3 +128,20 @@ export function openingNote(poi: POI, arriveHour?: number): string {
   if (arriveHour == null) return base;
   return arriveHour < poi.closeHour ? `${base} · 你到店时还开` : `${base} · 注意可能已打烊`;
 }
+
+export function formatLegMode(mode: 'walk' | 'transit'): string {
+  return mode === 'walk' ? '步行' : '车程';
+}
+
+export function formatDistance(meters: number): string {
+  return meters < 1000 ? `${meters}m` : `${(meters / 1000).toFixed(1)}km`;
+}
+
+export function travelSummary(route: Route): { label: string; value: string } {
+  const walk = route.totalWalkMin;
+  const ride = route.totalTransitMin;
+  if (walk > 0 && ride > 0) return { label: '移动', value: `步行 ${walk}min · 车程 ${ride}min` };
+  if (walk > 0) return { label: '步行', value: `${walk} min` };
+  if (ride > 0) return { label: '车程', value: `${ride} min` };
+  return { label: '移动', value: '少步行' };
+}

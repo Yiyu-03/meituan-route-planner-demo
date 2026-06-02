@@ -3,6 +3,14 @@ import type {
 } from '../types';
 import { SCENE_LABEL } from '../types';
 import { haversineM } from './geo';
+import {
+  hasExplicitFamilyIntent,
+  isAdultNightlifePOI,
+  isQuietIntent,
+  isStrongFamilyPOI,
+  wantsAdultNightlife,
+  wantsNightView,
+} from './semanticGuards';
 
 // ------------------------------------------------------------
 // ③ scorePOIs —— Mock Recommendation Model
@@ -17,8 +25,8 @@ import { haversineM } from './geo';
 const W = {
   quality: 18,
   popularity: 10,
-  sceneFit: 26,    // 画像场景契合 —— 最重要,体现个性化
-  prefMatch: 18,   // 本次输入的显式偏好
+  sceneFit: 22,    // 画像场景契合
+  prefMatch: 22,   // 本次输入的显式偏好要压过默认画像,避免“安静”被朋友画像冲掉
   budgetFit: 12,
   proximity: 8,
   companionFit: 5,
@@ -86,8 +94,12 @@ function proximityScore(p: POI, centerLat: number, centerLng: number): number {
   return clamp(1 - d / 6000);
 }
 
-/** 同行匹配:人多偏热闹/性价比,人少偏安静/精致 */
-function companionFitScore(p: POI, party: number): number {
+/** 同行匹配:人多偏热闹/性价比,人少偏安静/精致;再叠加场景语义护栏 */
+function companionFitScore(p: POI, c: Constraints, persona: Persona): number {
+  const party = c.party;
+  const explicitFamily = hasExplicitFamilyIntent(c);
+  const adultNightWanted = wantsAdultNightlife(c);
+  const quietMode = isQuietIntent(c);
   if (party >= 4) {
     // 大群体:lively/budget/foodie 加分,quiet/upscale 减分
     let v = 0.5;
@@ -95,6 +107,8 @@ function companionFitScore(p: POI, party: number): number {
     if (p.sceneTags.includes('budget')) v += 0.1;
     if (p.sceneTags.includes('quiet')) v -= 0.2;
     if (p.sceneTags.includes('upscale')) v -= 0.1;
+    if (!explicitFamily && isStrongFamilyPOI(p)) v -= 0.45;
+    if (quietMode && isAdultNightlifePOI(p) && !adultNightWanted) v -= 0.35;
     return clamp(v);
   }
   if (party <= 1) {
@@ -103,13 +117,50 @@ function companionFitScore(p: POI, party: number): number {
     if (p.sceneTags.includes('quiet')) v += 0.2;
     if (p.sceneTags.includes('cultural')) v += 0.15;
     if (p.sceneTags.includes('lively')) v -= 0.15;
+    if (isStrongFamilyPOI(p) && !explicitFamily) v -= 0.45;
+    if (isAdultNightlifePOI(p) && !adultNightWanted) v -= 0.15;
     return clamp(v);
   }
   // 2-3 人(情侣/小家庭):romantic/photo 略加分
   let v = 0.55;
   if (p.sceneTags.includes('romantic')) v += 0.15;
   if (p.sceneTags.includes('photo')) v += 0.05;
+  if (persona.id === 'family' || explicitFamily) {
+    if (p.sceneTags.includes('family')) v += 0.18;
+    if (isAdultNightlifePOI(p) && !adultNightWanted) v -= 0.7;
+  } else if (isStrongFamilyPOI(p)) {
+    v -= 0.4;
+  }
+  if (quietMode && p.category === 'entertainment' && !c.mustCategories.includes('entertainment')) v -= 0.2;
   return clamp(v);
+}
+
+function semanticPenalty(p: POI, c: Constraints, persona: Persona): number {
+  let penalty = 0;
+  const explicitFamily = hasExplicitFamilyIntent(c);
+  const adultNightWanted = wantsAdultNightlife(c);
+  const quietMode = isQuietIntent(c);
+  const avoidQueue = /少排队|别排队|不要排队|不想排队|少等位|别等位|不要等位/.test(c.raw);
+
+  if ((explicitFamily || persona.id === 'family') && isAdultNightlifePOI(p) && !adultNightWanted) {
+    penalty += 32;
+  }
+  if (!explicitFamily && isStrongFamilyPOI(p)) {
+    penalty += persona.id === 'family' ? 12 : 26;
+  }
+  if (persona.id === 'solo' && isAdultNightlifePOI(p) && !adultNightWanted && !wantsNightView(c)) {
+    penalty += 18;
+  }
+  if (quietMode && isAdultNightlifePOI(p) && !adultNightWanted) {
+    penalty += wantsNightView(c) ? 12 : 24;
+  }
+  if (quietMode && p.category === 'entertainment' && !c.mustCategories.includes('entertainment')) {
+    penalty += 10;
+  }
+  if (avoidQueue && p.queueBase >= 0.65) {
+    penalty += 10;
+  }
+  return penalty;
 }
 
 /** UGC:含正向情绪词的小幅加成 */
@@ -158,7 +209,7 @@ export function scorePOI(
   const { v: prefMatch, hits: prefHits } = prefMatchScore(p, c);
   const { v: budgetFit, over } = budgetFitScore(p, c, persona);
   const proximity = proximityScore(p, centerLat, centerLng);
-  const companionFit = companionFitScore(p, c.party);
+  const companionFit = companionFitScore(p, c, persona);
   const ugcBonus = ugcBonusScore(p);
 
   // persona 的 categoryPriority 作为类目级乘子(轻微)
@@ -175,10 +226,11 @@ export function scorePOI(
     ugcBonus: +(ugcBonus * W.ugcBonus).toFixed(1),
   };
 
-  const score = +Object.values(breakdown).reduce((s, x) => s + x, 0).toFixed(1);
+  const score = +(Object.values(breakdown).reduce((s, x) => s + x, 0)
+    - semanticPenalty(p, c, persona)).toFixed(1);
   const reasons = buildReasons(p, c, persona, breakdown, sceneHits, prefHits, over);
 
-  return { poi: p, score: Math.min(100, score), breakdown, reasons };
+  return { poi: p, score: Math.max(0, Math.min(100, score)), breakdown, reasons };
 }
 
 export function scorePOIs(
