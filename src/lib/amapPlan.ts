@@ -146,6 +146,9 @@ function queryKeywords(raw: string): string[] {
   if (wantsMeal(raw)) {
     words.add('美食');
     words.add('餐厅');
+    words.add('中餐厅');
+    if (/苏州|金鸡湖|园区/.test(raw)) words.add('苏州菜');
+    if (/杭州|西湖/.test(raw)) words.add('杭帮菜');
   }
   if (hasCultureWalkIntent(raw)) {
     ['园林', '博物馆', '文化景点', '公园'].forEach((word) => words.add(word));
@@ -157,7 +160,7 @@ function queryKeywords(raw: string): string[] {
   if (/购物|商场|买/.test(raw)) words.add('商场');
   if (/KTV|唱歌|密室|桌游|电影|影院|剧场|电玩|酒吧|夜生活|蹦迪|LiveHouse|livehouse/.test(raw)) words.add('娱乐');
   if (!words.size) ['景点', '美食', '咖啡', '商场'].forEach((word) => words.add(word));
-  return [...words].slice(0, 7);
+  return [...words].slice(0, 9);
 }
 
 function parseLocation(location?: string): { lng: number; lat: number } | null {
@@ -315,6 +318,15 @@ function passesAmapQuality(poi: POI, constraints: Constraints): boolean {
   return matchesAmapIntent(poi, constraints);
 }
 
+function looksTrustedDiningResult(item: AmapPoiResult): boolean {
+  const text = `${item.name} ${item.type ?? ''} ${item.address ?? ''}`;
+  return inferCategory(item.name, item.type) === 'dining'
+    && TRUSTED_DINING_RE.test(text)
+    && !LOW_TRUST_AMAP_RE.test(text)
+    && !ODD_DINING_RE.test(text)
+    && !UNAVAILABLE_POI_RE.test(text);
+}
+
 async function fetchJson(url: string, options: AmapFetchOptions = {}): Promise<unknown> {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? POI_SEARCH_TIMEOUT_MS);
@@ -334,6 +346,12 @@ async function retrieveAmapPois(raw: string, city: string, area: string): Promis
   const found: AmapPoiResult[] = [];
   let configured = false;
   const seen = new Set<string>();
+  const appendResult = (item: AmapPoiResult) => {
+    const key = `${item.name}-${item.location}`;
+    if (!item.location || seen.has(key)) return;
+    seen.add(key);
+    found.push(item);
+  };
   const responses = await Promise.all(queryKeywords(raw).map(async (keyword) => {
     const params = new URLSearchParams({
       keyword,
@@ -349,10 +367,28 @@ async function retrieveAmapPois(raw: string, city: string, area: string): Promis
     if (data.status === 'not_configured') return { pois: [], configured: false };
     if (data.status === 'ok' && data.configured) configured = true;
     for (const item of data.results ?? []) {
-      const key = `${item.name}-${item.location}`;
-      if (!item.location || seen.has(key)) continue;
-      seen.add(key);
-      found.push(item);
+      appendResult(item);
+    }
+  }
+
+  if (wantsMeal(raw) && configured && !found.some(looksTrustedDiningResult)) {
+    const rescueKeywords = /苏州|金鸡湖|园区/.test(raw)
+      ? ['苏州菜', '中餐厅', '金鸡湖餐厅']
+      : /杭州|西湖/.test(raw)
+        ? ['杭帮菜', '中餐厅', '西湖餐厅']
+        : ['中餐厅', '餐厅'];
+    const mealResponses = await Promise.all(rescueKeywords.map(async (keyword) => {
+      const params = new URLSearchParams({
+        keyword,
+        city,
+        area,
+        limit: '8',
+      });
+      return fetchJson(`/api/amap/poi-search?${params.toString()}`, { timeoutMs: 2800 }) as Promise<AmapPoiResponse | null>;
+    }));
+    for (const data of mealResponses) {
+      if (data?.status !== 'ok') continue;
+      for (const item of data.results ?? []) appendResult(item);
     }
   }
   if (!found.length) return { pois: [], configured };
