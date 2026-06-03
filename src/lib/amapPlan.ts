@@ -142,6 +142,7 @@ function queryKeywords(raw: string): string[] {
   const words = new Set<string>();
   if (hasCultureWalkIntent(raw)) {
     ['园林', '博物馆', '文化景点', '公园'].forEach((word) => words.add(word));
+    words.add('咖啡');
   }
   if (wantsMeal(raw)) words.add('美食');
   if (/咖啡|茶|下午茶|接电话|安静|轻松|坐/.test(raw)) words.add('咖啡');
@@ -150,7 +151,7 @@ function queryKeywords(raw: string): string[] {
   if (/购物|商场|买/.test(raw)) words.add('商场');
   if (/KTV|唱歌|密室|桌游|电影|影院|剧场|电玩|酒吧|夜生活|蹦迪|LiveHouse|livehouse/.test(raw)) words.add('娱乐');
   if (!words.size) ['景点', '美食', '咖啡', '商场'].forEach((word) => words.add(word));
-  return [...words].slice(0, 5);
+  return [...words].slice(0, 6);
 }
 
 function parseLocation(location?: string): { lng: number; lat: number } | null {
@@ -164,8 +165,8 @@ function parseLocation(location?: string): { lng: number; lat: number } | null {
 
 function inferCategory(name: string, type = ''): Category {
   const text = `${name} ${type}`;
+  if (/咖啡|茶饮|奶茶|甜品|饮品|面包|烘焙|下午茶/.test(text)) return 'cafe';
   if (/餐饮|美食|中餐|西餐|火锅|烧烤|小吃|面馆|饭店|酒楼|餐厅|菜馆|食府/.test(text)) return 'dining';
-  if (/咖啡|茶|奶茶|甜品|饮品|面包|烘焙/.test(text)) return 'cafe';
   if (/购物|商场|百货|奥特莱斯|市场|商业|超市|综合体/.test(text)) return 'shopping';
   if (/博物馆|博物院|美术馆|展览|展馆|图书馆|书店|文化|景点|名胜|古迹|园林|园区|公园|广场|风景|寺|古城|古镇|街区|遗址|纪念馆|艺术馆/.test(text)) return 'culture';
   if (/影院|剧场|KTV|桌游|密室|娱乐|游乐|Live|live|酒吧|运动|健身|电玩|舞厅/.test(text)) return 'entertainment';

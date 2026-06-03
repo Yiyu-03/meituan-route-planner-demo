@@ -326,3 +326,45 @@ export interface RefineAction {
   raw: string;
   note: string;            // 给用户看的解析说明
 }
+
+export type RefinePrimaryIntent =
+  | 'reduceTravel'
+  | 'addStop'
+  | 'addFoodOrDrink'
+  | 'replaceFood'
+  | 'lowerBudget'
+  | 'makeQuiet'
+  | 'makePhotoFriendly'
+  | 'changeArea'
+  | 'unknown';
+
+export interface RefineIntentSlots {
+  targetStop?: string;
+  category?: string;
+  area?: string;
+  budget?: number;
+  tone?: string;
+}
+
+export interface RefineIntentJSON {
+  primaryIntent: RefinePrimaryIntent;
+  secondaryIntents: RefinePrimaryIntent[];
+  slots: RefineIntentSlots;
+  confidence: number;
+  reason: string;
+  source?: 'llm' | 'local' | 'fallback';
+}
+
+export interface RefineAgentSummary {
+  primaryIntent: RefinePrimaryIntent;
+  confidence: number;
+  slots: RefineIntentSlots;
+  reason: string;
+  source: 'llm' | 'local' | 'fallback';
+  tool: string;
+  executed: boolean;
+  validationStatus: 'pass' | 'warn' | 'fail';
+  repairApplied: boolean;
+  fallbackUsed: boolean;
+  message: string;
+}

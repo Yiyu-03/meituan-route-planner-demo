@@ -32,8 +32,8 @@ import {
 import { DEMO_INPUTS, type DemoInput } from '../data/demoInputs';
 import { PERSONA_MAP, PERSONAS } from '../data/personas';
 import { runAgentLoop } from '../engine/agent/agentLoop';
-import { applyRefine, parseRefine } from '../engine/replan';
-import type { Category, CheckStatus, Constraints, Persona, PlanResult, Route, RouteStop } from '../types';
+import { runRefineAgent } from '../engine/refineAgent';
+import type { Category, CheckStatus, Constraints, Persona, PlanResult, RefineAgentSummary, Route, RouteStop } from '../types';
 import { CATEGORY_LABEL } from '../types';
 import { AgentTrace } from '../components/AgentTrace';
 import { ScoreBreakdownBars, fmtH } from '../components/ui';
@@ -73,6 +73,7 @@ interface PlannerSession {
   activeRouteIdx: number;
   changedIds: string[];
   toast: string;
+  agentNote?: RefineAgentSummary;
   ownerId: string;
   profileNote?: string;
 }
@@ -536,6 +537,7 @@ export function MainDashboard() {
       ...session,
       activeRouteIdx: routeIdx,
       changedIds: [],
+      agentNote: undefined,
       toast: `已切到「${routeLabel(
         session.plan.routes[routeIdx],
         session.plan.routes[0],
@@ -545,17 +547,17 @@ export function MainDashboard() {
     }));
   };
 
-  const applyRefineText = (text: string) => {
+  const applyRefineText = async (text: string) => {
     const value = text.trim();
     if (!value) return;
-    const action = parseRefine(value);
-    const result = applyRefine(
-      action,
-      activeRoute,
-      activeSession.plan.constraints,
-      activePersona,
-      activeSession.plan.candidates,
-    );
+    const result = await runRefineAgent({
+      rawInput: value,
+      currentRoute: activeRoute,
+      constraints: activeSession.plan.constraints,
+      persona: activePersona,
+      candidates: activeSession.plan.candidates,
+      originalRequest: activeSession.input,
+    });
 
     updateActiveSession((session) => {
       const routes = [...session.plan.routes];
@@ -565,6 +567,7 @@ export function MainDashboard() {
         plan: { ...session.plan, constraints: result.constraints, routes },
         changedIds: result.changed,
         toast: result.message,
+        agentNote: result.summary,
       };
     });
     setRefineText('');
@@ -714,6 +717,7 @@ export function MainDashboard() {
                   value={refineText}
                   onChange={setRefineText}
                   onPick={applyRefineText}
+                  agentNote={activeSession.agentNote}
                 />
                 <TripTipsCard route={activeRoute} />
               </aside>
@@ -1202,13 +1206,30 @@ function RouteAlternatives({
 }
 
 function ReplanCard({
-  actions, value, onChange, onPick,
+  actions, value, onChange, onPick, agentNote,
 }: {
   actions: ReplanChip[];
   value: string;
   onChange: (value: string) => void;
-  onPick: (value: string) => void;
+  onPick: (value: string) => void | Promise<void>;
+  agentNote?: RefineAgentSummary;
 }) {
+  const intentLabel: Record<RefineAgentSummary['primaryIntent'], string> = {
+    reduceTravel: '减少车程',
+    addStop: '增加站点',
+    addFoodOrDrink: '加入饮品休息点',
+    replaceFood: '替换餐饮',
+    lowerBudget: '降低预算',
+    makeQuiet: '安静一点',
+    makePhotoFriendly: '拍照友好',
+    changeArea: '收紧区域',
+    unknown: '待澄清',
+  };
+  const validationTone = agentNote?.validationStatus === 'fail'
+    ? 'border-rose-200 bg-rose-50 text-rose-800'
+    : agentNote?.validationStatus === 'warn'
+      ? 'border-amber-200 bg-amber-50 text-amber-800'
+      : 'border-emerald-200 bg-emerald-50 text-emerald-800';
   return (
     <section className="rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] p-4">
       <div className="mb-3 flex items-center gap-2">
@@ -1234,7 +1255,7 @@ function ReplanCard({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          onPick(value);
+          void onPick(value);
         }}
         className="flex gap-2"
       >
@@ -1248,6 +1269,33 @@ function ReplanCard({
           <Send size={16} strokeWidth={1.7} />
         </button>
       </form>
+      {agentNote && (
+        <div className="mt-3 rounded-lg border border-[#E4D5BE] bg-[#FFF9ED] p-3 text-[12px] leading-5 text-[#665744]">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-[#E9F4DF] px-2 py-0.5 font-semibold text-[#456B35]">
+              Intent: {intentLabel[agentNote.primaryIntent]}
+            </span>
+            <span className="tnum rounded-full border border-[#D8C6A8] bg-[#FFFDF8] px-2 py-0.5">
+              {Math.round(agentNote.confidence * 100)}%
+            </span>
+            <span className={`rounded-full border px-2 py-0.5 font-semibold ${validationTone}`}>
+              validator: {agentNote.validationStatus}
+            </span>
+          </div>
+          <p>{agentNote.reason}</p>
+          <p className="mt-1 text-[#8A765F]">
+            tool: {agentNote.tool} · {agentNote.executed ? '已执行' : '未改动'}
+            {agentNote.repairApplied ? ' · 已自动 repair' : ''}
+            {agentNote.fallbackUsed ? ' · 已保守降级' : ''}
+            {agentNote.source === 'llm' ? ' · LLM' : ' · 本地兜底'}
+          </p>
+          {Object.keys(agentNote.slots).length > 0 && (
+            <p className="mt-1 text-[#8A765F]">
+              slots: {Object.entries(agentNote.slots).map(([key, slotValue]) => `${key}=${slotValue}`).join(' / ')}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }

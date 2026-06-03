@@ -5,7 +5,9 @@ import { PERSONA_MAP } from '../src/data/personas';
 import { buildAmapCityPlan } from '../src/lib/amapPlan';
 import { runPipeline } from '../src/engine/pipeline';
 import { applyRefine, parseRefine } from '../src/engine/replan';
+import { runRefineAgent } from '../src/engine/refineAgent';
 import { routeAdvantage } from '../src/lib/display';
+import type { PlanResult, RefinePrimaryIntent, Route } from '../src/types';
 
 // performance.now polyfill 对 node 已内置(globalThis.performance)
 const C = {
@@ -93,6 +95,72 @@ interface ProductCaseResult {
   stops: string[];
 }
 
+function routeMoveMin(route: Route): number {
+  return route.totalWalkMin + route.totalTransitMin;
+}
+
+function routeHasHardMove(route: Route): boolean {
+  return route.stops.some((stop) => {
+    const leg = stop.legFromPrev;
+    if (!leg) return false;
+    return leg.minutes >= 100 || leg.distM > 12000 || leg.minutes > 45;
+  }) || routeMoveMin(route) >= 100;
+}
+
+function routeStamp(route: Route): '拿来就走' | '建议调整' | '需调整' {
+  if (route.checks.some((check) => check.status === 'fail')) return '需调整';
+  if (route.checks.some((check) => check.status === 'warn')) return '建议调整';
+  return '拿来就走';
+}
+
+async function runAgentRefines(
+  plan: PlanResult,
+  persona = PERSONA_MAP.friends,
+  texts: string[],
+): Promise<{
+  text: string;
+  expected: RefinePrimaryIntent;
+  actual: RefinePrimaryIntent;
+  message: string;
+  validation: 'pass' | 'warn' | 'fail';
+  stamp: string;
+  elapsedMs: number;
+  route: Route;
+}[]> {
+  const baseRoute = plan.routes[0];
+  const baseConstraints = plan.constraints;
+  const expectedIntent = (text: string): RefinePrimaryIntent => {
+    if (/车程|太远|少打车/.test(text)) return 'reduceTravel';
+    if (/多逛|多玩|再加/.test(text)) return 'addStop';
+    if (/奶茶|咖啡|茶饮/.test(text)) return 'addFoodOrDrink';
+    if (/安静/.test(text)) return 'makeQuiet';
+    return 'unknown';
+  };
+  const results = [];
+  for (const text of texts) {
+    const result = await runRefineAgent({
+      rawInput: text,
+      currentRoute: baseRoute,
+      constraints: baseConstraints,
+      persona,
+      candidates: plan.candidates,
+      originalRequest: baseConstraints.raw,
+      useLLM: false,
+    });
+    results.push({
+      text,
+      expected: expectedIntent(text),
+      actual: result.intent.primaryIntent,
+      message: result.message,
+      validation: result.summary.validationStatus,
+      stamp: routeStamp(result.route),
+      elapsedMs: result.elapsedMs,
+      route: result.route,
+    });
+  }
+  return results;
+}
+
 async function runSuzhouRemoteCase(input: string): Promise<ProductCaseResult> {
   const oldFetch = globalThis.fetch;
   globalThis.fetch = mockAmapFetch as typeof fetch;
@@ -111,6 +179,9 @@ async function runSuzhouRemoteCase(input: string): Promise<ProductCaseResult> {
     const refineAction = parseRefine('车程太久了');
     const refined = route ? applyRefine(refineAction, route, result!.constraints, PERSONA_MAP.friends, result!.candidates) : null;
     const refinedMove = refined ? refined.route.totalWalkMin + refined.route.totalTransitMin : Infinity;
+    const agentRefines = route
+      ? await runAgentRefines(result!, PERSONA_MAP.friends, ['车程太久了', '多逛几个地方', '想喝奶茶'])
+      : [];
     const asserts = [
       { name: '生成路线', pass: Boolean(route), desc: '高德试验链路返回一条路线' },
       { name: '生成耗时', pass: elapsedMs <= 10000, desc: '生成时间目标 <= 10s' },
@@ -128,6 +199,11 @@ async function runSuzhouRemoteCase(input: string): Promise<ProductCaseResult> {
       { name: '文案不泛化', pass: Boolean(route && !/朋友聚会|吃货|出片|热闹局/.test(routeText)), desc: '文化场景理由不套用热闹聚会/吃货/出片话术' },
       { name: '识别车程修改', pass: refineAction.kind === 'reduceTravel' && Boolean(refined), desc: '“车程太久了”不再 unknown' },
       { name: '车程修改不变差', pass: Boolean(refined && refinedMove <= totalMove), desc: '临时修改后移动时间不增加' },
+      { name: 'Agent intent JSON', pass: agentRefines.every((item) => item.actual === item.expected), desc: agentRefines.map((item) => `${item.text}:${item.actual}`).join(' / ') },
+      { name: 'Agent 不再未识别', pass: agentRefines.every((item) => !/未能识别/.test(item.message) && item.actual !== 'unknown'), desc: '苏州自由文本修改均有结构化意图' },
+      { name: 'Agent validator 闸门', pass: agentRefines.every((item) => item.validation !== 'fail' && !routeHasHardMove(item.route)), desc: '修改后路线无 fail,无 100min+ 或超长单段移动' },
+      { name: 'Agent stamp 一致', pass: agentRefines.every((item) => item.validation === 'pass' ? true : item.stamp !== '拿来就走'), desc: '有 warn/fail 时不盖拿来就走' },
+      { name: 'Agent 耗时', pass: agentRefines.every((item) => item.elapsedMs <= 10000), desc: '临时修改生成 <=10s 或降级 <=10s' },
     ];
     return {
       id: 'remote-suzhou',
@@ -174,12 +250,20 @@ async function runHangzhouRemoteCase(input: string): Promise<ProductCaseResult> 
     const route = result?.routes[0];
     const longJump = route?.stops.some((stop, idx) => idx > 0 && (stop.legFromPrev?.distM ?? 0) > 1800) ?? false;
     const routeText = route?.stops.map((stop) => `${stop.scored.poi.name} ${stop.scored.reasons.join(' ')}`).join(' ') ?? '';
+    const agentRefines = route
+      ? await runAgentRefines(result!, PERSONA_MAP.friends, ['想喝奶茶', '想喝咖啡', '安静一点'])
+      : [];
     const asserts = [
       { name: '生成路线', pass: Boolean(route), desc: '杭州西湖高德链路返回路线' },
       { name: '站数轻松', pass: Boolean(route && route.stops.length >= 2 && route.stops.length <= 3), desc: '轻松逛为 2-3 站' },
       { name: '围绕西湖', pass: Boolean(route?.stops.every((stop) => /西湖|断桥|孤山|龙井|湖滨|花港/.test(stop.scored.poi.name))), desc: '不远距离跳出西湖附近' },
       { name: '不远跳', pass: Boolean(route && !longJump), desc: '段间距离不过大' },
       { name: '节奏文案', pass: /慢逛|休息|节奏不赶|轻量/.test(routeText), desc: '文案体现轻松慢逛' },
+      { name: 'Agent intent JSON', pass: agentRefines.every((item) => item.actual === item.expected), desc: agentRefines.map((item) => `${item.text}:${item.actual}`).join(' / ') },
+      { name: 'Agent 不再未识别', pass: agentRefines.every((item) => !/未能识别/.test(item.message) && item.actual !== 'unknown'), desc: '杭州自由文本修改均有结构化意图' },
+      { name: 'Agent validator 闸门', pass: agentRefines.every((item) => item.validation !== 'fail' && !routeHasHardMove(item.route)), desc: '修改后路线无 fail,无 100min+ 或超长单段移动' },
+      { name: 'Agent stamp 一致', pass: agentRefines.every((item) => item.validation === 'pass' ? true : item.stamp !== '拿来就走'), desc: '有 warn/fail 时不盖拿来就走' },
+      { name: 'Agent 耗时', pass: agentRefines.every((item) => item.elapsedMs <= 10000), desc: '临时修改生成 <=10s 或降级 <=10s' },
     ];
     return {
       id: 'remote-hangzhou',
@@ -237,7 +321,13 @@ async function mockAmapFetch(input: unknown): Promise<Response> {
     { name: '苏州工业园区量贩KTV', address: '苏州工业园区', location: '120.704300,31.320000', type: '体育休闲服务;娱乐场所;KTV', source: 'amap' },
     { name: '金鸡湖电玩城', address: '苏州工业园区', location: '120.705300,31.321000', type: '体育休闲服务;娱乐场所;游戏厅', source: 'amap' },
   ];
-  const results = keyword.includes('美食')
+  const results = keyword.includes('咖啡')
+    ? [
+      { name: '金鸡湖茶饮休息点', address: '苏州工业园区金鸡湖畔', location: '120.709000,31.318500', type: '餐饮服务;茶饮店;咖啡厅', source: 'amap' },
+      { name: '诚品生活轻食咖啡', address: '苏州工业园区诚品生活', location: '120.718000,31.317000', type: '餐饮服务;咖啡厅;轻食', source: 'amap' },
+      ...commonBad,
+    ]
+    : keyword.includes('美食')
     ? [
       { name: '胡子饮食店', address: '苏州工业园区小巷', location: '120.704500,31.321500', type: '餐饮服务;中餐厅', source: 'amap' },
       { name: '苏州园区本帮菜馆', address: '苏州工业园区星湖街', location: '120.706000,31.322000', type: '餐饮服务;中餐厅', source: 'amap' },

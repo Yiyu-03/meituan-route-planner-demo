@@ -134,6 +134,23 @@ export function validateRoute(
   });
 
   // 额外:结束时间是否超过画像期望
+  const plannedEnd = c.startTime + c.durationMin / 60;
+  if (route.endTime > plannedEnd + 0.5) {
+    checks.push({
+      key: 'schedule',
+      label: '时间窗口',
+      status: 'fail',
+      detail: `预计 ${fmtH(route.endTime)} 结束,明显超出本次 ${fmtH(plannedEnd)} 左右的时间窗口`,
+    });
+  } else if (route.endTime > plannedEnd + 0.01) {
+    checks.push({
+      key: 'schedule',
+      label: '时间窗口',
+      status: 'warn',
+      detail: `预计 ${fmtH(route.endTime)} 结束,略超出本次 ${fmtH(plannedEnd)} 左右的时间窗口`,
+    });
+  }
+
   if (route.endTime > persona.latestEnd + 0.01) {
     checks.push({
       key: 'endtime',
