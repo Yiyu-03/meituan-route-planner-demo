@@ -76,6 +76,7 @@ const MEAL_RE = /吃饭|午饭|午餐|晚饭|晚餐|美食|餐厅|正餐|吃点/
 const LOW_TRUST_AMAP_RE = /私人影院|工作室|量贩|会所|KTV|歌厅|舞厅|酒吧|夜店|洗浴|按摩|足浴|电玩|电玩城|棋牌|麻将|网吧|饮食店|快餐|便利店|小卖部|食杂|成人|养生|采耳/i;
 const NON_ROUTE_PLACE_RE = /酒店|宾馆|学校|小学|中学|大学|幼儿园|写字楼|产业园区|商务住宅|售楼|停车场|政府机构/i;
 const ODD_DINING_RE = /游轮|码头|酒店|宾馆|咖啡厅|咖啡店|茶饮|奶茶|甜品/i;
+const UNAVAILABLE_POI_RE = /暂停开放|停止开放|临时闭馆|闭馆|已关闭|停业|歇业/i;
 const TRUSTED_DINING_RE = /餐厅|中餐|西餐|本帮|杭帮|苏帮|菜馆|酒楼|饭店|食府|火锅|烧烤|面馆|茶餐厅|咖啡|轻食|小馆/;
 const TRUSTED_CULTURE_RE = /园林|博物馆|博物院|美术馆|展馆|展览馆|纪念馆|图书馆|艺术馆|公园|景区|风景|名胜|古迹|历史|文化|西湖|湖|街区|古镇/;
 const POI_SEARCH_TIMEOUT_MS = 3600;
@@ -142,7 +143,10 @@ function allowsTwoMeals(raw: string): boolean {
 
 function queryKeywords(raw: string): string[] {
   const words = new Set<string>();
-  if (wantsMeal(raw)) words.add('美食');
+  if (wantsMeal(raw)) {
+    words.add('美食');
+    words.add('餐厅');
+  }
   if (hasCultureWalkIntent(raw)) {
     ['园林', '博物馆', '文化景点', '公园'].forEach((word) => words.add(word));
     words.add('咖啡');
@@ -153,7 +157,7 @@ function queryKeywords(raw: string): string[] {
   if (/购物|商场|买/.test(raw)) words.add('商场');
   if (/KTV|唱歌|密室|桌游|电影|影院|剧场|电玩|酒吧|夜生活|蹦迪|LiveHouse|livehouse/.test(raw)) words.add('娱乐');
   if (!words.size) ['景点', '美食', '咖啡', '商场'].forEach((word) => words.add(word));
-  return [...words].slice(0, 6);
+  return [...words].slice(0, 7);
 }
 
 function parseLocation(location?: string): { lng: number; lat: number } | null {
@@ -226,6 +230,7 @@ function durationFor(category: Category): number {
 function isBlockedAmapPoi(poi: POI, constraints: Constraints): boolean {
   const text = `${poi.name} ${poi.ugc}`;
   const explicitNoisy = wantsAdultOrNoisy(constraints.raw);
+  if (UNAVAILABLE_POI_RE.test(text)) return true;
   if (ADULT_OR_NOISY_POI_RE.test(text) && !explicitNoisy) return true;
   if (LOW_TRUST_AMAP_RE.test(text) && !explicitNoisy) return true;
   if (poi.category === 'dining' && wantsMeal(constraints.raw) && ODD_DINING_RE.test(text)) return true;
