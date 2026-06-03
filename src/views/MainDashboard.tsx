@@ -76,10 +76,27 @@ interface PlannerSession {
   profileNote?: string;
 }
 
+interface CityGateNotice {
+  city: string;
+  input: string;
+}
+
 const NOTE_COLORS: PlannerSession['color'][] = ['gold', 'leaf', 'coral', 'sky'];
 const USER_STORAGE_KEY = 'meituan-route-demo-user-v1';
 const HISTORY_STORAGE_KEY = 'meituan-route-demo-history-v1';
 const ANON_USER_ID = 'anonymous-local-user';
+const UNSUPPORTED_CITY_RULES: { city: string; re: RegExp }[] = [
+  { city: '杭州/余杭', re: /杭州|余杭|西湖区|拱墅|萧山|滨江/ },
+  { city: '北京', re: /北京|朝阳区|海淀区|三里屯|国贸/ },
+  { city: '深圳', re: /深圳|南山|福田|宝安/ },
+  { city: '广州', re: /广州|天河|越秀|珠江新城/ },
+  { city: '南京', re: /南京|新街口|秦淮/ },
+  { city: '苏州', re: /苏州|姑苏|工业园区/ },
+  { city: '成都', re: /成都|锦江|太古里/ },
+  { city: '重庆', re: /重庆|渝中|解放碑/ },
+  { city: '武汉', re: /武汉|江汉|光谷/ },
+  { city: '西安', re: /西安|碑林|雁塔/ },
+];
 
 const USER_PREF_OPTIONS: { key: UserPreferenceKey; label: string; planningText: string }[] = [
   { key: 'quiet', label: '安静', planningText: '偏好安静不吵' },
@@ -177,6 +194,12 @@ function applyUserProfileToInput(input: string, profile: UserProfile | null): st
   }
   if (!bits.length) return input;
   return `${input}。用户长期偏好:${bits.join('、')}`;
+}
+
+function detectUnsupportedCity(input: string): CityGateNotice | null {
+  const hit = UNSUPPORTED_CITY_RULES.find((rule) => rule.re.test(input));
+  if (!hit) return null;
+  return { city: hit.city, input };
 }
 
 function createPlan(input: string, personaPick: PersonaPick, profile: UserProfile | null = null): PlanResult {
@@ -336,6 +359,7 @@ export function MainDashboard() {
   const [judgeMode, setJudgeMode] = useState(false);
   const [isPlanning, setIsPlanning] = useState(false);
   const [refineText, setRefineText] = useState('');
+  const [cityGateNotice, setCityGateNotice] = useState<CityGateNotice | null>(null);
 
   useEffect(() => {
     saveStoredSessions(historyOwnerId, sessions);
@@ -389,6 +413,12 @@ export function MainDashboard() {
     event?.preventDefault();
     const text = draft.trim();
     if (!text || isPlanning) return;
+    const unsupportedCity = detectUnsupportedCity(text);
+    if (unsupportedCity) {
+      setCityGateNotice(unsupportedCity);
+      return;
+    }
+    setCityGateNotice(null);
     setIsPlanning(true);
     window.setTimeout(() => {
       const next = makeSession(text, personaPick, sessions.length, undefined, userProfile, historyOwnerId);
@@ -496,11 +526,17 @@ export function MainDashboard() {
                 <p className="mb-2 text-[12px] font-semibold tracking-[0.18em] text-[#8A765F]">写下这次出门</p>
                 <textarea
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    if (cityGateNotice) setCityGateNotice(null);
+                  }}
                   rows={4}
                   className="min-h-[118px] w-full resize-none rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] p-3 text-[15px] leading-7 text-[#201B16] outline-none transition placeholder:text-[#9A8B79] focus:border-[#201B16] focus:ring-2 focus:ring-[#F7C948]/40"
                   placeholder="朋友来上海，下午在新天地附近逛逛，3点想找个安静地方接电话，晚上吃饭别排队太久，人均300内"
                 />
+                {cityGateNotice && (
+                  <UnsupportedCityNotice notice={cityGateNotice} compact />
+                )}
               </div>
 
               <div className="rounded-lg border border-[#E2D3BD] bg-[#FFF9ED] p-3">
@@ -546,7 +582,7 @@ export function MainDashboard() {
             </form>
 
             <details className="mt-5 rounded-lg border border-[#D9CBB6] bg-[#F7F0E2] p-3">
-              <summary className="cursor-pointer text-[13px] font-semibold text-[#665744]">展开试讲样例</summary>
+              <summary className="cursor-pointer text-[13px] font-semibold text-[#665744]">查看示例需求</summary>
               <div className="mt-3 space-y-2">
                 {DEMO_INPUTS.slice(0, 6).map((demo) => (
                   <button
@@ -567,6 +603,11 @@ export function MainDashboard() {
           </aside>
 
           <section className="book-page book-page-right p-4 sm:p-6">
+            {cityGateNotice && (
+              <div className="mb-4">
+                <UnsupportedCityNotice notice={cityGateNotice} />
+              </div>
+            )}
             <RouteCover route={activeRoute} persona={activePersona} risk={risk} budget={budget} />
 
             <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
@@ -788,6 +829,28 @@ function UserProfileModal({
           保存到本地并使用
         </button>
       </form>
+    </div>
+  );
+}
+
+function UnsupportedCityNotice({ notice, compact = false }: { notice: CityGateNotice; compact?: boolean }) {
+  return (
+    <div className={`rounded-lg border border-amber-200 bg-amber-50 text-amber-900 ${compact ? 'mt-2 px-3 py-2 text-[12px]' : 'px-4 py-3 text-[13px]'}`}>
+      <div className="flex items-start gap-2">
+        <Database size={compact ? 14 : 16} strokeWidth={1.7} className="mt-0.5 shrink-0" />
+        <div className="leading-6">
+          <p className="font-semibold">暂未生成 {notice.city} 路线</p>
+          <p>
+            当前本地 mock POI 主要覆盖上海。这个城市需要配置真实地图/POI API 后生成，
+            系统不会把上海 POI 包装成 {notice.city} 路线。
+          </p>
+          {!compact && (
+            <p className="mt-1 text-[12px] text-amber-800/80">
+              已保留你的输入：“{notice.input}”。右侧仍显示上一条已生成路线。
+            </p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1255,6 +1318,40 @@ function JudgeAppendix({ session, route }: { session: PlannerSession; route: Rou
 }
 
 function DataSourceCard() {
+  const [amapStatus, setAmapStatus] = useState<'checking' | 'configured' | 'not_configured' | 'unreachable'>('checking');
+
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/amap/poi-search?keyword=status&city=上海&limit=1')
+      .then(async (res) => {
+        const contentType = res.headers.get('content-type') ?? '';
+        if (!contentType.includes('application/json')) return null;
+        return res.json();
+      })
+      .then((data) => {
+        if (!alive) return;
+        if (!data) setAmapStatus('unreachable');
+        else if (data.configured) setAmapStatus('configured');
+        else if (data.status === 'not_configured') setAmapStatus('not_configured');
+        else setAmapStatus('unreachable');
+      })
+      .catch(() => {
+        if (alive) setAmapStatus('unreachable');
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const apiLabel = amapStatus === 'configured'
+    ? '已配置'
+    : amapStatus === 'checking'
+      ? '检测中'
+      : '未配置';
+  const apiTone = amapStatus === 'configured'
+    ? 'bg-emerald-100 text-emerald-800'
+    : 'bg-amber-100 text-amber-800';
+
   return (
     <div className="rounded-lg border border-[#E4D5BE] bg-[#FFF9ED] p-3">
       <div className="mb-2 flex items-center gap-2">
@@ -1262,16 +1359,29 @@ function DataSourceCard() {
         <h3 className="font-semibold">数据来源与当前能力</h3>
       </div>
       <div className="space-y-2 text-[12px] leading-5 text-[#665744]">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div className="rounded-lg border border-[#E4D5BE] bg-[#FFFDF8] p-2">
+            <span className="text-[11px] text-[#8A765F]">高德 API</span>
+            <div className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${apiTone}`}>
+              {apiLabel}
+            </div>
+          </div>
+          <div className="rounded-lg border border-[#E4D5BE] bg-[#FFFDF8] p-2">
+            <span className="text-[11px] text-[#8A765F]">当前路线数据源</span>
+            <p className="mt-1 font-semibold text-[#201B16]">mock POI · API adapter available</p>
+          </div>
+        </div>
         <p>
-          当前 Demo 采用数据源抽象层:本地 mock POI、mock UGC、人均、排队、评分、营业与地图距离字段，
-          字段形态按真实服务接口组织,再由规则化 Agent Loop 完成规划。
+          当前路线主流程默认使用本地 mock POI、mock UGC、人均、排队、评分、营业与地图距离字段，
+          保证 Demo 稳定可演示,再由规则化 Agent Loop 完成规划。
         </p>
         <p>
           链路为 parseConstraints → retrieveCandidates → scorePOIs → buildRouteCandidates → validateRoute → repair/replan → explainRoute。
         </p>
         <p>
-          发布到真实业务时,可替换为高德开放平台 POI 搜索、地理编码、路径规划、距离矩阵与交通态势 API,
-          以及美团/点评侧 UGC、排队、人均、团购和门店履约数据。
+          已提供 Vercel 高德 API adapter 雏形:/api/amap/poi-search 与 /api/amap/route-walking。
+          在 Vercel 配置 AMAP_KEY 后可调用真实高德 POI 搜索与步行路径估算。
+          当前没有接入美团/点评真实交易、排队、UGC 或团购数据。
         </p>
       </div>
     </div>
