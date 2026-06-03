@@ -438,6 +438,30 @@ function rescueRequiredAmapPois(strictPois: POI[], areaFiltered: POI[], constrai
   return rescued;
 }
 
+function cultureKindOfPoi(poi: POI): 'museum' | 'garden' | 'other' {
+  const text = `${poi.name} ${poi.ugc}`;
+  if (/博物馆|博物院|展馆|展览|美术馆|纪念馆|展示馆/.test(text)) return 'museum';
+  if (/园林|公园|景区|风景|西湖|湖|古镇|街区|自然|森林|湿地|山/.test(text)) return 'garden';
+  return 'other';
+}
+
+function supplementExplicitCulturePois(pois: POI[], constraints: Constraints): POI[] {
+  if (!wantsCoreCulture(constraints.raw)) return pois;
+  const supplemented = [...pois];
+  const fallbacks = fallbackPoisFor(constraints.raw);
+  const hasId = (poi: POI) => supplemented.some((item) => item.id === poi.id || item.name === poi.name);
+  const wantsMuseum = /博物馆|博物院|展馆|展览|美术馆/.test(constraints.raw);
+  const wantsGarden = /园林|自然风光|自然|公园|景区|风景|逛/.test(constraints.raw);
+  const addKind = (kind: 'museum' | 'garden') => {
+    if (supplemented.some((poi) => poi.category === 'culture' && cultureKindOfPoi(poi) === kind)) return;
+    const hit = fallbacks.find((poi) => poi.category === 'culture' && cultureKindOfPoi(poi) === kind && !hasId(poi));
+    if (hit) supplemented.push(hit);
+  };
+  if (wantsMuseum) addKind('museum');
+  if (wantsGarden) addKind('garden');
+  return supplemented;
+}
+
 function wantsCoreCulture(raw: string): boolean {
   return /园林|博物馆|博物院|美术馆|展馆|展览|自然风光|自然|公园|景区|风景|文化|历史/.test(raw);
 }
@@ -584,22 +608,26 @@ function categorySlots(constraints: Constraints, target: number): Category[] {
 function chooseStops(candidates: ScoredPOI[], constraints: Constraints) {
   const picks: ScoredPOI[] = [];
   const used = new Set<string>();
+  const usedNameKeys = new Set<string>();
   const target = targetStopCount(constraints);
   const desired = categorySlots(constraints, target);
   const allowSecondMeal = allowsTwoMeals(constraints.raw);
   const wantsMuseum = /博物馆|博物院|展馆|展览|美术馆/.test(constraints.raw);
   const wantsGarden = /园林|西湖|公园|景区|风景|逛/.test(constraints.raw);
 
+  const nameKey = (name: string) => name
+    .replace(/[（(].*?[）)]/g, '')
+    .replace(/[-·].*$/, '')
+    .replace(/景区.*$/, '景区')
+    .trim();
+
   const cultureKind = (item: ScoredPOI): 'museum' | 'garden' | 'other' => {
-    const text = `${item.poi.name} ${item.poi.ugc}`;
-    if (/博物馆|博物院|展馆|展览|美术馆|纪念馆/.test(text)) return 'museum';
-    if (/园林|公园|景区|风景|西湖|湖|古镇|街区/.test(text)) return 'garden';
-    return 'other';
+    return cultureKindOfPoi(item.poi);
   };
 
   for (const category of desired) {
     if (category === 'dining' && !allowSecondMeal && picks.some((item) => item.poi.category === 'dining')) continue;
-    let pool = candidates.filter((item) => item.poi.category === category && !used.has(item.poi.id));
+    let pool = candidates.filter((item) => item.poi.category === category && !used.has(item.poi.id) && !usedNameKeys.has(nameKey(item.poi.name)));
     if (category === 'culture' && hasCultureWalkIntent(constraints.raw)) {
       const pickedKinds = new Set(picks.filter((item) => item.poi.category === 'culture').map(cultureKind));
       const preferredKind = wantsMuseum && !pickedKinds.has('museum')
@@ -619,15 +647,18 @@ function chooseStops(candidates: ScoredPOI[], constraints: Constraints) {
     if (!hit) continue;
     picks.push(hit);
     used.add(hit.poi.id);
+    usedNameKeys.add(nameKey(hit.poi.name));
     if (picks.length >= target) break;
   }
 
   for (const item of candidates) {
     if (picks.length >= target) break;
     if (used.has(item.poi.id)) continue;
+    if (usedNameKeys.has(nameKey(item.poi.name))) continue;
     if (item.poi.category === 'dining' && !allowSecondMeal && picks.some((pick) => pick.poi.category === 'dining')) continue;
     picks.push(item);
     used.add(item.poi.id);
+    usedNameKeys.add(nameKey(item.poi.name));
   }
   return picks.slice(0, Math.min(target, picks.length));
 }
@@ -1021,14 +1052,15 @@ export async function buildAmapCityPlan(
   const areaFiltered = areaCenter
     ? rawPois.filter((poi) => poiDistanceToAreaM(poi, areaCenter) <= areaCenter.radiusM)
     : rawPois;
-  const strictPois = rescueRequiredAmapPois(
+  const strictPois = supplementExplicitCulturePois(rescueRequiredAmapPois(
     areaFiltered.filter((poi) => passesAmapQuality(poi, constraints)),
     areaFiltered,
     constraints,
-  );
+  ), constraints);
   const minQualityStops = targetStopCount(constraints) <= 2 ? 2 : 3;
   const pois = strictPois.length >= minQualityStops ? strictPois : strictPois.slice(0, Math.max(2, strictPois.length));
   if (pois.length < 2) return buildFallbackPlan('明确区域内可信 POI 不足');
+  const hasFallbackPois = pois.some((poi) => poi.source !== 'amap');
   const center = pois.reduce((acc, poi) => ({ lat: acc.lat + poi.lat, lng: acc.lng + poi.lng }), { lat: 0, lng: 0 });
   const centerLat = center.lat / pois.length;
   const centerLng = center.lng / pois.length;
@@ -1094,6 +1126,8 @@ export async function buildAmapCityPlan(
     agentTrace: trace,
     repairLog: [...budgetRepair.logs, ...hardRepair.logs],
     slotPlan: route.coverage,
-    retrieveNote: `非上海试验链路:POI 来自高德 Web 服务(${amapCity}${area ? `/${area}` : ''});${areaCenter ? '已按明确区域收紧半径;' : ''}已过滤低可信/冲突业态 ${Math.max(0, rawPois.length - pois.length)} 个;价格、排队、偏好解释仍由本地规则估算。`,
+    retrieveNote: hasFallbackPois
+      ? `非上海试验链路:高德 POI 召回后补入同区域安全兜底点(${amapCity}${area ? `/${area}` : ''});${areaCenter ? '已按明确区域收紧半径;' : ''}已过滤低可信/冲突业态 ${Math.max(0, rawPois.length - pois.filter((poi) => poi.source === 'amap').length)} 个;价格、排队、偏好解释仍由本地规则估算。`
+      : `非上海试验链路:POI 来自高德 Web 服务(${amapCity}${area ? `/${area}` : ''});${areaCenter ? '已按明确区域收紧半径;' : ''}已过滤低可信/冲突业态 ${Math.max(0, rawPois.length - pois.length)} 个;价格、排队、偏好解释仍由本地规则估算。`,
   };
 }
