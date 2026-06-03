@@ -17,6 +17,7 @@ import type {
   POI,
   Route,
   RouteStop,
+  ScoredPOI,
   SceneTag,
 } from '../types';
 
@@ -62,24 +63,47 @@ const LABELS: Record<AgentStageKey, string> = {
 };
 
 const KNOWN_CITY_NAMES = ['杭州', '北京', '深圳', '广州', '南京', '苏州', '成都', '重庆', '武汉', '西安'];
+const ADULT_OR_NOISY_POI_RE = /KTV|量贩|歌厅|舞厅|歌舞|夜店|酒吧|清吧|酒廊|迪厅|蹦迪|电玩|电玩城|电子游戏|网吧|棋牌|麻将|洗浴|足浴|按摩|SPA|桑拿|会所|夜总会|台球|桌球/i;
+const EXPLICIT_ADULT_OR_NOISY_RE = /KTV|唱歌|酒吧|夜生活|蹦迪|电玩|电玩城|游戏厅|舞厅|LiveHouse|livehouse|小酌|喝一杯|夜店|按摩|洗浴/i;
+const CULTURE_WALK_RE = /园区转转|园林|博物馆|博物院|美术馆|展览|展馆|逛逛|citywalk|文艺|文化|历史|公园|街区|古镇/;
+const MEAL_RE = /吃饭|午饭|午餐|晚饭|晚餐|美食|餐厅|正餐|吃点/;
 
 function getAmapCityName(city: string, raw: string): string {
   return KNOWN_CITY_NAMES.find((name) => city.includes(name) || raw.includes(name)) ?? city.split('/')[0] ?? '上海';
 }
 
 function getAreaKeyword(raw: string, city: string): string {
-  const areaWords = ['余杭', '西湖', '拱墅', '萧山', '滨江', '三里屯', '国贸', '海淀', '南山', '福田', '天河', '新街口', '姑苏', '太古里'];
+  const areaWords = ['余杭', '西湖', '拱墅', '萧山', '滨江', '三里屯', '国贸', '海淀', '南山', '福田', '天河', '新街口', '姑苏', '工业园区', '园区', '金鸡湖', '太古里'];
   return areaWords.find((word) => raw.includes(word)) ?? city.split('/')[1] ?? '';
+}
+
+function hasCultureWalkIntent(raw: string): boolean {
+  return CULTURE_WALK_RE.test(raw);
+}
+
+function wantsAdultOrNoisy(raw: string): boolean {
+  return EXPLICIT_ADULT_OR_NOISY_RE.test(raw);
+}
+
+function wantsMeal(raw: string): boolean {
+  return MEAL_RE.test(raw);
+}
+
+function allowsTwoMeals(raw: string): boolean {
+  return /两顿|两餐|午饭.*晚饭|晚饭.*午饭|午餐.*晚餐|晚餐.*午餐/.test(raw);
 }
 
 function queryKeywords(raw: string): string[] {
   const words = new Set<string>();
-  if (/吃饭|晚饭|午饭|美食|餐|好吃/.test(raw)) words.add('美食');
+  if (hasCultureWalkIntent(raw)) {
+    ['园林', '博物馆', '文化景点', '公园'].forEach((word) => words.add(word));
+  }
+  if (wantsMeal(raw)) words.add('美食');
   if (/咖啡|茶|下午茶|接电话|安静|坐/.test(raw)) words.add('咖啡');
   if (/博物馆|美术馆|文化|文艺|历史|展|逛逛|citywalk/.test(raw)) words.add('景点');
   if (/拍照|出片|打卡|citywalk|逛逛/.test(raw)) words.add('公园');
   if (/购物|商场|买/.test(raw)) words.add('商场');
-  if (/玩|朋友|聚会|热闹/.test(raw)) words.add('娱乐');
+  if (/KTV|唱歌|密室|桌游|电影|影院|剧场|电玩|酒吧|夜生活|蹦迪|LiveHouse|livehouse/.test(raw)) words.add('娱乐');
   if (!words.size) ['景点', '美食', '咖啡', '商场'].forEach((word) => words.add(word));
   return [...words].slice(0, 5);
 }
@@ -97,9 +121,9 @@ function inferCategory(name: string, type = ''): Category {
   const text = `${name} ${type}`;
   if (/餐饮|美食|中餐|西餐|火锅|烧烤|小吃|面馆|饭店|酒楼|餐厅|菜馆|食府/.test(text)) return 'dining';
   if (/咖啡|茶|奶茶|甜品|饮品|面包|烘焙/.test(text)) return 'cafe';
-  if (/博物馆|美术馆|展览|图书馆|书店|文化|景点|名胜|古迹|公园|广场|风景|寺|古城|遗址/.test(text)) return 'culture';
-  if (/影院|剧场|KTV|桌游|密室|娱乐|游乐|Live|酒吧|运动|健身/.test(text)) return 'entertainment';
-  if (/商场|购物|百货|奥特莱斯|市场|商业|超市|综合体/.test(text)) return 'shopping';
+  if (/购物|商场|百货|奥特莱斯|市场|商业|超市|综合体/.test(text)) return 'shopping';
+  if (/博物馆|博物院|美术馆|展览|展馆|图书馆|书店|文化|景点|名胜|古迹|园林|园区|公园|广场|风景|寺|古城|古镇|街区|遗址|纪念馆|艺术馆/.test(text)) return 'culture';
+  if (/影院|剧场|KTV|桌游|密室|娱乐|游乐|Live|live|酒吧|运动|健身|电玩|舞厅/.test(text)) return 'entertainment';
   if (/夜景|酒吧|江景|湖景|观景|夜游|灯光/.test(text)) return 'nightscape';
   return 'culture';
 }
@@ -110,7 +134,8 @@ function tagsFor(category: Category, raw: string, name: string, type = ''): Scen
   if (/安静|接电话|咖啡|茶/.test(text)) tags.add('quiet');
   if (/朋友|热闹|娱乐|聚会|商场/.test(text)) tags.add('lively');
   if (/拍照|出片|公园|景点|风景|古城|遗址|湖|江/.test(text)) tags.add('photo');
-  if (/文艺|文化|博物馆|美术馆|书店|历史|古城|遗址/.test(text)) tags.add('cultural');
+  if (/文艺|文化|博物馆|博物院|美术馆|书店|历史|园林|古城|古镇|街区|遗址/.test(text)) tags.add('cultural');
+  if (/园林|公园|湖|江|绿地|湿地/.test(text)) tags.add('nature');
   if (/亲子|儿童|乐园/.test(text)) tags.add('family');
   if (/酒吧|夜景|夜游/.test(text)) tags.add('nightlife');
   if (/便宜|实惠|预算|小吃/.test(text)) tags.add('budget');
@@ -137,14 +162,23 @@ function estimatePrice(category: Category, budget: number | null, index: number)
 
 function durationFor(category: Category): number {
   const map: Record<Category, number> = {
-    dining: 75,
-    cafe: 55,
-    culture: 70,
+    dining: 70,
+    cafe: 40,
+    culture: 75,
     entertainment: 90,
     shopping: 60,
     nightscape: 45,
   };
   return map[category];
+}
+
+function isBlockedAmapPoi(poi: POI, constraints: Constraints): boolean {
+  const text = `${poi.name} ${poi.ugc}`;
+  const explicitNoisy = wantsAdultOrNoisy(constraints.raw);
+  if (ADULT_OR_NOISY_POI_RE.test(text) && !explicitNoisy) return true;
+  if (hasCultureWalkIntent(constraints.raw) && !explicitNoisy && (poi.category === 'entertainment' || poi.category === 'nightscape')) return true;
+  if ((constraints.prefs.includes('quiet') || /安静|接电话|打电话|开会/.test(constraints.raw)) && !explicitNoisy && poi.category === 'entertainment') return true;
+  return false;
 }
 
 function queueFor(category: Category, index: number): number {
@@ -216,32 +250,75 @@ async function retrieveAmapPois(raw: string, city: string, area: string): Promis
   return { pois: found.slice(0, 24), configured };
 }
 
-function chooseStops(candidates: ReturnType<typeof scorePOIs>, constraints: Constraints) {
-  const picks = [];
+function mealWindow(constraints: Constraints): { start: number; end: number; label: '午饭' | '晚饭' } | null {
+  const raw = constraints.raw;
+  if (/午饭|午餐|中午/.test(raw) || (constraints.startTime < 13.5 && wantsMeal(raw))) {
+    return { start: 11.5, end: 13.5, label: '午饭' };
+  }
+  if (/晚饭|晚餐|晚上.*吃|傍晚.*吃/.test(raw) || (constraints.startTime >= 16 && wantsMeal(raw))) {
+    return { start: 17.5, end: 19.5, label: '晚饭' };
+  }
+  return null;
+}
+
+function targetStopCount(constraints: Constraints): number {
+  const hours = constraints.durationMin / 60;
+  if (hours <= 1.6) return 1;
+  if (hours <= 2) return 2;
+  if (hours <= 4) return constraints.pace === 'packed' ? 3 : 2;
+  if (hours <= 6) return constraints.pace === 'packed' ? 4 : 3;
+  return 4;
+}
+
+function categorySlots(constraints: Constraints, target: number): Category[] {
+  const meal = mealWindow(constraints);
+  const cultural = hasCultureWalkIntent(constraints.raw);
+  const explicitEntertainment = wantsAdultOrNoisy(constraints.raw) || /密室|桌游|电影|影院|剧场|游乐|演出/.test(constraints.raw);
+
+  if (cultural && meal) {
+    const slots: Category[] = ['culture', 'dining', 'culture', 'cafe'];
+    return slots.slice(0, target);
+  }
+  if (cultural) {
+    const slots: Category[] = ['culture', 'culture', 'cafe', 'shopping'];
+    return slots.slice(0, target);
+  }
+  if (meal) {
+    const slots: Category[] = ['culture', 'dining', 'cafe', 'shopping'];
+    return slots.slice(0, target);
+  }
+  if (explicitEntertainment) {
+    const slots: Category[] = ['dining', 'entertainment', 'cafe', 'nightscape'];
+    return slots.slice(0, target);
+  }
+  const slots: Category[] = ['culture', 'cafe', 'shopping', 'dining'];
+  return slots.slice(0, target);
+}
+
+function chooseStops(candidates: ScoredPOI[], constraints: Constraints) {
+  const picks: ScoredPOI[] = [];
   const used = new Set<string>();
-  const desired: Category[] = [
-    ...constraints.mustCategories,
-    'culture',
-    'dining',
-    'cafe',
-    'shopping',
-    'entertainment',
-    'nightscape',
-  ];
+  const target = targetStopCount(constraints);
+  const desired = categorySlots(constraints, target);
+  const allowSecondMeal = allowsTwoMeals(constraints.raw);
+
   for (const category of desired) {
+    if (category === 'dining' && !allowSecondMeal && picks.some((item) => item.poi.category === 'dining')) continue;
     const hit = candidates.find((item) => item.poi.category === category && !used.has(item.poi.id));
     if (!hit) continue;
     picks.push(hit);
     used.add(hit.poi.id);
-    if (picks.length >= 4) break;
+    if (picks.length >= target) break;
   }
+
   for (const item of candidates) {
-    if (picks.length >= 4) break;
+    if (picks.length >= target) break;
     if (used.has(item.poi.id)) continue;
+    if (item.poi.category === 'dining' && !allowSecondMeal && picks.some((pick) => pick.poi.category === 'dining')) continue;
     picks.push(item);
     used.add(item.poi.id);
   }
-  return picks.slice(0, Math.max(3, Math.min(4, picks.length)));
+  return picks.slice(0, Math.min(target, picks.length));
 }
 
 function fallbackLeg(from: POI, to: POI): { distM: number; minutes: number; mode: LegMode; etaSource: 'amap'; etaConfidence: number } {
@@ -267,11 +344,32 @@ async function estimateLeg(from: POI, to: POI) {
   return fallbackLeg(from, to);
 }
 
+function rewriteAmapReasons(scored: ScoredPOI, constraints: Constraints): ScoredPOI {
+  const poi = scored.poi;
+  const meal = mealWindow(constraints);
+  const reasons: string[] = [];
+
+  if (hasCultureWalkIntent(constraints.raw) && poi.category === 'culture') {
+    reasons.push('贴合文化/园林/博物馆偏好');
+    if (constraints.startTime <= 11.5) reasons.push('适合上午到达后的轻量游览');
+  } else if (poi.category === 'dining' && meal) {
+    reasons.push(`${meal.label}安排在饭点，作为这条路线的正餐`);
+  } else if (poi.category === 'cafe') {
+    reasons.push('作为中途休息点，控制节奏不赶');
+  }
+
+  if (poi.source === 'amap') reasons.push('名称与地址来自高德真实 POI');
+  const old = scored.reasons.filter((reason) => !reason.startsWith('贴合「'));
+  return { ...scored, reasons: [...new Set([...reasons, ...old])].slice(0, 4) };
+}
+
 async function buildRoute(stops: ReturnType<typeof chooseStops>, constraints: Constraints, persona: Persona): Promise<Route> {
   const routeStops: RouteStop[] = [];
   let cursor = constraints.startTime;
   let totalWalkMin = 0;
   let totalTransitMin = 0;
+  const meal = mealWindow(constraints);
+  let mealScheduled = false;
 
   for (let index = 0; index < stops.length; index += 1) {
     const scored = stops[index];
@@ -284,6 +382,10 @@ async function buildRoute(stops: ReturnType<typeof chooseStops>, constraints: Co
       cursor += estimated.minutes / 60;
       if (estimated.mode === 'walk') totalWalkMin += estimated.minutes;
       else totalTransitMin += estimated.minutes;
+    }
+    if (scored.poi.category === 'dining' && meal && !mealScheduled) {
+      cursor = Math.max(cursor, meal.start);
+      mealScheduled = true;
     }
     const arrive = cursor;
     const depart = arrive + scored.poi.avgDuration / 60;
@@ -369,20 +471,23 @@ export async function buildAmapCityPlan(
 
   const pois = retrieved.pois
     .map((item, index) => toPoi(item, index, constraints))
-    .filter((item): item is POI => Boolean(item));
+    .filter((item): item is POI => Boolean(item))
+    .filter((poi) => !isBlockedAmapPoi(poi, constraints));
   if (pois.length < 3) return null;
   const center = pois.reduce((acc, poi) => ({ lat: acc.lat + poi.lat, lng: acc.lng + poi.lng }), { lat: 0, lng: 0 });
   const centerLat = center.lat / pois.length;
   const centerLng = center.lng / pois.length;
 
   const tScore = performance.now();
-  const candidates = scorePOIs(pois, constraints, persona, centerLat, centerLng);
+  const candidates = scorePOIs(pois, constraints, persona, centerLat, centerLng)
+    .map((candidate) => rewriteAmapReasons(candidate, constraints));
   timings.score = +(performance.now() - tScore).toFixed(2);
   traceStep(trace, 'scorePOIs', `${pois.length} 个高德 POI`, '按画像/预算/偏好做本地规则评分', timings.score);
 
   const tBuild = performance.now();
   const selected = chooseStops(candidates, constraints);
-  if (selected.length < 3) return null;
+  const minStops = targetStopCount(constraints) >= 3 ? 3 : targetStopCount(constraints);
+  if (selected.length < minStops) return null;
   const route = await buildRoute(selected, constraints, persona);
   timings.build = +(performance.now() - tBuild).toFixed(2);
   timings.validate = 0;

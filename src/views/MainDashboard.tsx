@@ -1052,7 +1052,7 @@ function StopCard({
             <h4 className="text-[20px] font-semibold leading-tight text-[#201B16]">{poi.name}</h4>
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-[#776755]">
               <span className="inline-flex items-center gap-1"><Star size={13} fill="#F7C948" strokeWidth={1.5} />{poi.rating} · {poi.reviews} 条</span>
-              <span>¥{poi.perCapita}/人</span>
+              <span>{poi.source === 'amap' ? `人均估算 ¥${poi.perCapita}` : `¥${poi.perCapita}/人`}</span>
               <span>{openingNote(poi, stop.arrive)}</span>
               <span className={queue.tone === 'green' ? 'text-emerald-700' : 'text-amber-700'}>{queue.label}</span>
             </div>
