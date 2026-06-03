@@ -116,6 +116,66 @@ const AREA_CENTERS: Record<string, { lng: number; lat: number; aliases: string[]
   },
 };
 
+function localFallbackPoi(
+  id: string,
+  name: string,
+  category: Category,
+  area: string,
+  lng: number,
+  lat: number,
+  perCapita: number,
+  sceneTags: SceneTag[],
+): POI {
+  return {
+    id,
+    name,
+    category,
+    area,
+    lng,
+    lat,
+    rating: 4.5,
+    reviews: 900,
+    perCapita,
+    openHour: 9,
+    closeHour: category === 'entertainment' ? 24 : 22,
+    avgDuration: durationFor(category),
+    sceneTags,
+    ugc: '高德召回不足时使用的同区域安全兜底点；价格/排队/偏好解释为本地规则估算',
+    queueBase: queueFor(category, 0),
+    source: 'mock_map',
+    confidence: 0.72,
+    freshness: 'static',
+  };
+}
+
+function fallbackPoisFor(raw: string): POI[] {
+  if (/昆山|昆山区|昆山市|苏州昆山/.test(raw)) {
+    return [
+      localFallbackPoi('fallback-kunshan-museum', '昆山博物馆', 'culture', '昆山 昆山市', 120.974, 31.386, 28, ['cultural']),
+      localFallbackPoi('fallback-kunshan-dining', '昆山亭林路本帮菜馆', 'dining', '昆山 昆山市', 120.962, 31.386, 88, ['local', 'budget']),
+      localFallbackPoi('fallback-kunshan-tinglin', '亭林园', 'culture', '昆山 昆山市', 120.956, 31.389, 36, ['cultural', 'nature']),
+      localFallbackPoi('fallback-kunshan-forest', '昆山市城市生态森林公园', 'culture', '昆山 昆山市', 120.983, 31.412, 24, ['nature', 'quiet']),
+    ];
+  }
+  if (/虎丘|虎丘区|高新区/.test(raw)) {
+    return [
+      localFallbackPoi('fallback-huqiu-scenic', '虎丘景区', 'culture', '虎丘区 虎丘景区', 120.580, 31.338, 36, ['cultural', 'nature']),
+      localFallbackPoi('fallback-huqiu-dining', '虎丘山塘家常菜', 'dining', '虎丘区 虎丘景区', 120.579, 31.334, 96, ['local', 'budget']),
+      localFallbackPoi('fallback-huqiu-wetland', '虎丘湿地公园', 'culture', '虎丘区 虎丘景区', 120.557, 31.387, 28, ['nature', 'quiet']),
+      localFallbackPoi('fallback-fengqiao', '苏州市枫桥风景名胜区', 'culture', '苏州高新区 虎丘区', 120.569, 31.310, 36, ['cultural', 'nature']),
+    ];
+  }
+  if (/园区|金鸡湖|东方之门|诚品|苏州工业园区/.test(raw)) {
+    return [
+      localFallbackPoi('fallback-sip-exhibition', '苏州工业园区规划展示馆', 'culture', '苏州工业园区 金鸡湖', 120.706, 31.319, 28, ['cultural']),
+      localFallbackPoi('fallback-sip-dining', '金鸡湖苏帮菜馆', 'dining', '苏州工业园区 金鸡湖', 120.704, 31.320, 96, ['local', 'budget']),
+      localFallbackPoi('fallback-sip-lake', '金鸡湖景区', 'culture', '苏州工业园区 金鸡湖', 120.716, 31.320, 36, ['nature', 'cultural']),
+      localFallbackPoi('fallback-sip-art', '金鸡湖美术馆', 'culture', '苏州工业园区 金鸡湖', 120.712, 31.318, 28, ['cultural', 'quiet']),
+    ];
+  }
+  return [];
+}
+
 function getAmapCityName(city: string, raw: string): string {
   return KNOWN_CITY_NAMES.find((name) => city.includes(name) || raw.includes(name)) ?? city.split('/')[0] ?? '上海';
 }
@@ -344,6 +404,40 @@ function passesAmapQuality(poi: POI, constraints: Constraints): boolean {
   return matchesAmapIntent(poi, constraints);
 }
 
+function rescueRequiredAmapPois(strictPois: POI[], areaFiltered: POI[], constraints: Constraints): POI[] {
+  const rescued = [...strictPois];
+  const hasPoi = (poi: POI) => rescued.some((item) => item.id === poi.id);
+  const addRequired = (category: Category, predicate: (poi: POI) => boolean) => {
+    if (rescued.some((poi) => poi.category === category)) return;
+    const candidate = areaFiltered
+      .filter((poi) => poi.category === category && !hasPoi(poi))
+      .filter((poi) => !isBlockedAmapPoi(poi, constraints) && predicate(poi))
+      .sort((a, b) => {
+        const score = (poi: POI) => poi.rating * 10 + Math.min(20, poi.reviews / 100) - poi.perCapita / 60;
+        return score(b) - score(a);
+      })[0];
+    if (candidate) rescued.push(candidate);
+  };
+
+  if (mealRequested(constraints)) {
+    addRequired('dining', (poi) => matchesAmapIntent(poi, constraints));
+  }
+
+  if (wantsCoreCulture(constraints.raw)) {
+    const coreCount = rescued.filter(coreCultureMatch).length;
+    if (coreCount < 2) {
+      const additions = areaFiltered
+        .filter((poi) => poi.category === 'culture' && !hasPoi(poi))
+        .filter((poi) => !isBlockedAmapPoi(poi, constraints) && coreCultureMatch(poi))
+        .sort((a, b) => b.rating - a.rating || b.reviews - a.reviews)
+        .slice(0, 2 - coreCount);
+      rescued.push(...additions);
+    }
+  }
+
+  return rescued;
+}
+
 function wantsCoreCulture(raw: string): boolean {
   return /园林|博物馆|博物院|美术馆|展馆|展览|自然风光|自然|公园|景区|风景|文化|历史/.test(raw);
 }
@@ -414,11 +508,15 @@ async function retrieveAmapPois(raw: string, city: string, area: string): Promis
   }
 
   if (wantsMeal(raw) && configured && !found.some(looksTrustedDiningResult)) {
-    const rescueKeywords = /苏州|金鸡湖|园区/.test(raw)
-      ? ['苏州菜', '中餐厅', '金鸡湖餐厅']
-      : /杭州|西湖/.test(raw)
-        ? ['杭帮菜', '中餐厅', '西湖餐厅']
-        : ['中餐厅', '餐厅'];
+    const rescueKeywords = /昆山|昆山区|昆山市/.test(raw)
+      ? ['昆山餐厅', '昆山本帮菜', '中餐厅']
+      : /虎丘|高新区/.test(raw)
+        ? ['虎丘餐厅', '高新区餐厅', '苏帮菜']
+        : /苏州|金鸡湖|园区/.test(raw)
+          ? ['苏州菜', '中餐厅', '金鸡湖餐厅']
+          : /杭州|西湖/.test(raw)
+            ? ['杭帮菜', '中餐厅', '西湖餐厅']
+            : ['中餐厅', '餐厅'];
     const mealResponses = await Promise.all(rescueKeywords.map(async (keyword) => {
       const params = new URLSearchParams({
         keyword,
@@ -765,13 +863,16 @@ async function buildRoute(stops: ReturnType<typeof chooseStops>, constraints: Co
   }
   const violations = violationsFromChecks(route, checks);
   const explained = explainRoute({ ...route, checks, violations }, constraints, persona);
+  const allAmap = routeStops.every((stop) => stop.scored.poi.source === 'amap');
   return {
     ...route,
     checks,
     violations,
-    explanation: `高德真实 POI 试验路线 · ${explained.explanation}`,
+    explanation: `${allAmap ? '高德真实 POI 试验路线' : '区域安全兜底路线'} · ${explained.explanation}`,
     risks: [
-      'POI 名称与地址来自高德真实 POI；人均、排队、UGC 与偏好解释仍为本地规则估算。',
+      allAmap
+        ? 'POI 名称与地址来自高德真实 POI；人均、排队、UGC 与偏好解释仍为本地规则估算。'
+        : '高德本次召回不足或不稳定，已使用同区域安全兜底点；建议调整区域或刷新后再确认。',
       '当前未接入美团/点评真实交易、排队、团购或点评 UGC 数据。',
       ...explained.risks.filter((risk) => !risk.includes('当前路线各项约束均通过')),
     ].slice(0, 6),
@@ -851,11 +952,65 @@ export async function buildAmapCityPlan(
   };
   const amapCity = getAmapCityName(gate.city, raw);
   const area = getAreaKeyword(raw, gate.city);
+  const buildFallbackPlan = async (reason: string): Promise<PlanResult | null> => {
+    const fallbackPois = fallbackPoisFor(raw);
+    if (!fallbackPois.length) return null;
+    if (!trace.some((step) => step.key === 'retrieveCandidates')) {
+      traceStep(trace, 'retrieveCandidates', `${amapCity}${area ? ` · ${area}` : ''}`, reason, 0, 'fallback');
+    }
+    const center = fallbackPois.reduce((acc, poi) => ({ lat: acc.lat + poi.lat, lng: acc.lng + poi.lng }), { lat: 0, lng: 0 });
+    const centerLat = center.lat / fallbackPois.length;
+    const centerLng = center.lng / fallbackPois.length;
+    const candidates = scorePOIs(fallbackPois, constraints, persona, centerLat, centerLng)
+      .sort((a, b) => b.score - a.score)
+      .map((candidate) => rewriteAmapReasons(candidate, constraints));
+    traceStep(trace, 'scorePOIs', `${fallbackPois.length} 个同区域兜底 POI`, '高德召回不足时按显式需求/预算/区域重新评分', 0, 'fallback');
+    const selected = chooseStops(candidates, constraints);
+    const minStops = Math.min(targetStopCount(constraints) >= 3 ? 3 : targetStopCount(constraints), fallbackPois.length);
+    if (selected.length < minStops) return null;
+    const hardRepair = await repairAmapHardConstraints(selected, constraints, persona);
+    if (hardRepair.stops.length < minStops || routeVerdict(hardRepair.route, constraints).status === 'blocked') return null;
+    const route = {
+      ...hardRepair.route,
+      risks: [
+        `降级原因:${reason}`,
+        ...hardRepair.route.risks,
+      ].slice(0, 6),
+    };
+    traceStep(trace, 'planRoute', '同区域安全兜底 + 类目覆盖', hardRepair.stops.map((item) => item.poi.name).join(' → '), 0, 'fallback');
+    traceStep(trace, 'validateConstraints', `${hardRepair.stops.length} 个兜底 POI`, route.checks.map((check) => `${check.key}:${check.status}`).join(','), 0);
+    traceStep(
+      trace,
+      'repairIfNeeded',
+      '兜底路线',
+      hardRepair.logs.length ? hardRepair.logs.map((log) => log.action).join('；') : '硬约束无需修复',
+      0,
+      hardRepair.logs.length ? 'ok' : 'skip',
+    );
+    traceStep(trace, 'explainRoute', route.id, '生成降级说明与风险提示', 0, 'fallback');
+    return {
+      constraints,
+      candidates,
+      routes: [route],
+      personaId: persona.id,
+      resolvedPersonaId: persona.id,
+      stageTimings: timings,
+      intent,
+      personaInference,
+      conflict,
+      agentTrace: trace,
+      repairLog: hardRepair.logs,
+      slotPlan: route.coverage,
+      retrieveNote: `非上海试验链路:高德 POI 召回不足或不稳定(${reason});已使用${area || gate.city}同区域安全兜底点;路线仍经过预算、移动和时间硬闸门。`,
+    };
+  };
 
   const tRetrieve = performance.now();
   const retrieved = await retrieveAmapPois(raw, amapCity, area);
   timings.retrieve = +(performance.now() - tRetrieve).toFixed(2);
-  if (!retrieved.configured || retrieved.pois.length < 3) return null;
+  if (!retrieved.configured || retrieved.pois.length < 3) {
+    return buildFallbackPlan(!retrieved.configured ? '高德服务未配置或不可用' : '高德真实 POI 召回不足');
+  }
   traceStep(trace, 'retrieveCandidates', `${amapCity}${area ? ` · ${area}` : ''}`, `高德返回 ${retrieved.pois.length} 个真实 POI`, timings.retrieve);
 
   const rawPois = retrieved.pois
@@ -866,10 +1021,14 @@ export async function buildAmapCityPlan(
   const areaFiltered = areaCenter
     ? rawPois.filter((poi) => poiDistanceToAreaM(poi, areaCenter) <= areaCenter.radiusM)
     : rawPois;
-  const strictPois = areaFiltered.filter((poi) => passesAmapQuality(poi, constraints));
+  const strictPois = rescueRequiredAmapPois(
+    areaFiltered.filter((poi) => passesAmapQuality(poi, constraints)),
+    areaFiltered,
+    constraints,
+  );
   const minQualityStops = targetStopCount(constraints) <= 2 ? 2 : 3;
   const pois = strictPois.length >= minQualityStops ? strictPois : strictPois.slice(0, Math.max(2, strictPois.length));
-  if (pois.length < 2) return null;
+  if (pois.length < 2) return buildFallbackPlan('明确区域内可信 POI 不足');
   const center = pois.reduce((acc, poi) => ({ lat: acc.lat + poi.lat, lng: acc.lng + poi.lng }), { lat: 0, lng: 0 });
   const centerLat = center.lat / pois.length;
   const centerLng = center.lng / pois.length;
@@ -890,10 +1049,12 @@ export async function buildAmapCityPlan(
   const budgetRepair = repairAmapBudget(selectedBeforeRepair, candidates, constraints);
   let selected = budgetRepair.stops;
   const minStops = Math.min(targetStopCount(constraints) >= 3 ? 3 : targetStopCount(constraints), pois.length);
-  if (selected.length < minStops) return null;
+  if (selected.length < minStops) return buildFallbackPlan('类目槽位召回不足');
   const hardRepair = await repairAmapHardConstraints(selected, constraints, persona);
   selected = hardRepair.stops;
-  if (selected.length < minStops || routeVerdict(hardRepair.route, constraints).status === 'blocked') return null;
+  if (selected.length < minStops || routeVerdict(hardRepair.route, constraints).status === 'blocked') {
+    return buildFallbackPlan('真实 POI 组合未通过移动/时间硬闸门');
+  }
   const builtRoute = hardRepair.route;
   const unresolvedBudget = budgetRepair.logs.find((log) => !log.resolved && log.action.includes('最低约'));
   const route = unresolvedBudget

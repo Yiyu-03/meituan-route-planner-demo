@@ -270,10 +270,13 @@ async function runSuzhouKunshanCase(input: string): Promise<ProductCaseResult> {
     const route = result?.routes[0];
     const routeText = route?.stops.map((stop) => stop.scored.poi.name).join(' → ') ?? '';
     const badCity = /留园|三香路|苏州革命博物馆|拙政园|姑苏/.test(routeText);
+    const meals = route?.stops.filter((stop) => stop.scored.poi.category === 'dining') ?? [];
     const asserts = [
       { name: '生成路线', pass: Boolean(route), desc: '昆山误写为昆山区也能生成区域路线' },
       { name: '围绕昆山', pass: Boolean(route?.stops.every((stop) => /昆山|亭林|森林/.test(`${stop.scored.poi.name} ${stop.scored.poi.ugc}`))), desc: '候选和路线围绕昆山/昆山市' },
       { name: '不跑苏州市区', pass: Boolean(route && !badCity), desc: '不得出现留园/三香路/苏州市区 POI' },
+      { name: '午饭 1 个', pass: meals.length === 1, desc: '预算吃午饭时必须保留一个正餐槽位' },
+      { name: '午饭在饭点', pass: meals.every((stop) => stop.arrive >= 11.5 && stop.arrive <= 13.5), desc: '昆山午饭到达时间在 11:30-13:30' },
       { name: '显式兴趣≥2', pass: explicitInterestCount(route) >= 2, desc: '自然风光/博物馆至少 2 个核心站点' },
       { name: '移动硬闸门', pass: Boolean(route && routeVerdict(route, result!.constraints).status !== 'blocked' && !routeHasHardMove(route)), desc: '昆山路线不得有 100min+ 或超长单段移动' },
     ];
