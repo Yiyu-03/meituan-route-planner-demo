@@ -80,6 +80,13 @@ body {
   opacity: 0.88;
 }
 
+.travel-route-stamp-warning {
+  border-color: rgba(190, 64, 64, 0.78);
+  color: #a33a2c;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
 .session-note {
   display: block;
   width: 112px;

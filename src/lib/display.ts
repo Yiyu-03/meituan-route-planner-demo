@@ -94,15 +94,36 @@ function photoCount(route: Route): number {
   return route.stops.filter((stop) => stop.scored.poi.sceneTags.includes('photo')).length;
 }
 
-export function routeAdvantage(routes: Route[], index: number): RouteAdvantage {
+export function routeAdvantage(routes: Route[], index: number, budget?: number | null): RouteAdvantage {
   if (index === 0) return { label: '推荐方案', note: '综合时间、预算、偏好最均衡' };
   const route = routes[index];
+  const base = routes[0];
   const minBy = (selector: (route: Route) => number) => routes.every((item) => selector(route) <= selector(item));
   const maxBy = (selector: (route: Route) => number) => routes.every((item) => selector(route) >= selector(item));
+  const photoNum = photoCount(route);
+
+  if (base && route.totalCost < base.totalCost && (budget != null || minBy((item) => item.totalCost))) {
+    if (budget != null && route.totalCost > budget) {
+      const verdict = budgetVerdict(route.totalCost, budget);
+      return {
+        label: '相对省钱版',
+        note: `比推荐页少 ¥${base.totalCost - route.totalCost}/人，但仍${verdict.label}`,
+      };
+    }
+    return { label: '低预算版', note: `人均 ¥${route.totalCost}，比推荐页更省` };
+  }
 
   if (minBy(moveMin)) return { label: '少走路版', note: `全程移动约 ${moveMin(route)} 分钟，最省脚力` };
-  if (minBy((item) => item.totalCost)) return { label: '低预算版', note: `人均 ¥${route.totalCost}，几条里最省` };
-  if (maxBy(photoCount)) return { label: '拍照友好版', note: `含 ${photoCount(route)} 个出片点` };
+  if (minBy((item) => item.totalCost)) {
+    if (budget != null && route.totalCost > budget) {
+      const verdict = budgetVerdict(route.totalCost, budget);
+      return { label: '相对省钱版', note: `人均 ¥${route.totalCost}，几条里最省，但仍${verdict.label}` };
+    }
+    return { label: '低预算版', note: `人均 ¥${route.totalCost}，几条里最省` };
+  }
+  if (photoNum > 0 && maxBy(photoCount) && (!base || photoNum > photoCount(base))) {
+    return { label: '拍照友好版', note: `含 ${photoNum} 个出片点` };
+  }
   if (maxBy(avgRating)) return { label: '高评分版', note: `平均评分 ${avgRating(route).toFixed(1)}，口碑最稳` };
   return { label: '备选方案', note: '换一种动线组合' };
 }

@@ -1,6 +1,7 @@
 import type { PlanResult, Persona } from '../types';
 import { runPipeline } from '../engine/pipeline';
 import { PERSONA_MAP, PERSONAS } from '../data/personas';
+import { routeAdvantage } from '../lib/display';
 import {
   hasExplicitFamilyIntent,
   isAdultNightlifePOI,
@@ -97,6 +98,17 @@ const A = {
       return true;
     });
   },
+  credibleAlternativeLabels: () => (r: PlanResult) => r.routes.every((route, idx) => {
+    const advantage = routeAdvantage(r.routes, idx, r.constraints.budgetPerCapita);
+    const photoCount = route.stops.filter((s) => s.scored.poi.sceneTags.includes('photo')).length;
+    const base = r.routes[0];
+    if (advantage.label === '拍照友好版' && photoCount === 0) return false;
+    if (advantage.label === '低预算版') {
+      if (idx > 0 && base && route.totalCost >= base.totalCost) return false;
+      if (r.constraints.budgetPerCapita != null && route.totalCost > r.constraints.budgetPerCapita) return false;
+    }
+    return true;
+  }),
 };
 
 export const CASES: EvalCase[] = [
@@ -137,6 +149,7 @@ export const CASES: EvalCase[] = [
       { name: '预算达标/标记', fn: A.budgetWithinOrFlagged(), desc: '预算内或被标记' },
       { name: '营业无硬冲突', fn: A.noBadOpen(), desc: '无 fail 级营业冲突' },
       { name: '无强亲子错配', fn: A.noStrongFamilyUnlessAsked(), desc: '朋友聚会不混入强亲子 POI' },
+      { name: '备选命名可信', fn: A.credibleAlternativeLabels(), desc: '低预算/拍照标签不自相矛盾' },
       { name: '每站有评分', fn: A.allScored(), desc: '所有 POI 有评分' },
       { name: '有备选', fn: A.hasAlternatives(), desc: '至少 1 条备选路线' },
     ],

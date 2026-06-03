@@ -204,7 +204,7 @@ function makeSession(
     plan,
     activeRouteIdx: 0,
     changedIds: [],
-    toast: '',
+    toast: budgetGuidance(route, plan.constraints.budgetPerCapita),
     ownerId,
     profileNote: userPreferenceNote(profile),
   };
@@ -261,6 +261,12 @@ function budgetMeta(route: Route, budget: number | null): {
   return { value: verdict.display, tone, helper: verdict.label };
 }
 
+function budgetGuidance(route: Route, budget: number | null): string {
+  if (budget == null || route.totalCost <= budget) return '';
+  const verdict = budgetVerdict(route.totalCost, budget);
+  return `人均已超预算：${verdict.display}。当前方案仍需调整，可点「便宜一点」或选择相对省钱版继续压预算。`;
+}
+
 function importantChecks(route: Route) {
   const keys = ['budget', 'queue', 'open'];
   return keys
@@ -315,8 +321,8 @@ function queueText(base: number) {
   return { label: '排队低', hint: '当前节奏稳定', tone: 'green' as const };
 }
 
-function routeLabel(route: Route, best: Route, index: number) {
-  return routeAdvantage([best, route], index === 0 ? 0 : 1).label;
+function routeLabel(route: Route, best: Route, index: number, budget?: number | null) {
+  return routeAdvantage([best, route], index === 0 ? 0 : 1, budget).label;
 }
 
 export function MainDashboard() {
@@ -424,7 +430,12 @@ export function MainDashboard() {
       ...session,
       activeRouteIdx: routeIdx,
       changedIds: [],
-      toast: `已切到「${routeLabel(session.plan.routes[routeIdx], session.plan.routes[0], routeIdx)}」，右侧旅行页同步更新。`,
+      toast: `已切到「${routeLabel(
+        session.plan.routes[routeIdx],
+        session.plan.routes[0],
+        routeIdx,
+        session.plan.constraints.budgetPerCapita,
+      )}」，右侧旅行页同步更新。${budgetGuidance(session.plan.routes[routeIdx], session.plan.constraints.budgetPerCapita)}`,
     }));
   };
 
@@ -790,9 +801,12 @@ function RouteCover({
   budget: { value: string; tone: 'neutral' | 'green' | 'amber' | 'red'; helper: string };
 }) {
   const movement = travelSummary(route);
+  const budgetOver = budget.tone === 'amber' || budget.tone === 'red';
   return (
     <section className="relative overflow-hidden rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] p-4 shadow-[0_10px_24px_rgba(68,50,31,.08)]">
-      <div className="travel-route-stamp">拿来就走</div>
+      <div className={`travel-route-stamp ${budgetOver ? 'travel-route-stamp-warning' : ''}`}>
+        {budgetOver ? '超预算·建议调整' : '拿来就走'}
+      </div>
       <div className="max-w-3xl">
         <p className="mb-2 flex items-center gap-2 text-[12px] font-semibold tracking-[0.2em] text-[#8A765F]">
           <NotebookTabs size={15} strokeWidth={1.6} />
@@ -999,7 +1013,7 @@ function RouteAlternatives({
       <div className="grid gap-2 md:grid-cols-2">
         {routes.slice(0, 4).map((route, idx) => {
           const active = idx === activeRouteIdx;
-          const advantage = routeAdvantage(routes, idx);
+          const advantage = routeAdvantage(routes, idx, budget);
           const budgetInfo = budgetVerdict(route.totalCost, budget);
           const budgetCls = budgetInfo.tone === 'ok'
             ? 'border-emerald-200 bg-emerald-50 text-emerald-800'

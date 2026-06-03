@@ -60,6 +60,10 @@ export function parseRefine(text: string): RefineAction {
     return { kind: 'addPreference', pref: 'quiet', raw, note: '新增一个「安静」高分节点' };
   }
 
+  if (/便宜一点|便宜点|省钱|低预算|更便宜|实惠/.test(raw)) {
+    return { kind: 'replaceCategory', criterion: 'cheaper', raw, note: '优先替换或移除高人均节点,尽量压到预算内' };
+  }
+
   // 换某类目里的一家
   const wantsReplace = /换|替换|改一家|换一家|换个/.test(raw);
   if (wantsReplace) {
@@ -149,6 +153,17 @@ function stopTotalCost(stops: ScoredPOI[]): number {
   return Math.round(stops.reduce((sum, stop) => sum + stop.poi.perCapita, 0));
 }
 
+function budgetOutcome(cost: number, budget: number): string {
+  if (cost <= budget) return '已落在预算内';
+  const overPct = Math.round((cost / budget - 1) * 100);
+  return `已降到最低 ¥${cost},仍超预算 ${overPct}%`;
+}
+
+function canKeepDiversityAfterDrop(stops: ScoredPOI[], idx: number): boolean {
+  const cats = new Set(stops.filter((_, i) => i !== idx).map((s) => s.poi.category));
+  return cats.size >= 3;
+}
+
 function tightenBudgetStops(
   initialStops: ScoredPOI[],
   budget: number,
@@ -183,10 +198,22 @@ function tightenBudgetStops(
       }
     }
 
-    if (!best) break;
-    stops[best.idx] = best.repl;
-    changed.push(best.repl.poi.id);
-    messages.push(`「${best.old.poi.name}」换成「${best.repl.poi.name}」`);
+    if (best) {
+      stops[best.idx] = best.repl;
+      changed.push(best.repl.poi.id);
+      messages.push(`「${best.old.poi.name}」换成「${best.repl.poi.name}」`);
+      continue;
+    }
+
+    if (stops.length <= 3) break;
+    const drop = stops
+      .map((s, idx) => ({ idx, stop: s }))
+      .filter(({ idx }) => canKeepDiversityAfterDrop(stops, idx))
+      .sort((a, b) => b.stop.poi.perCapita - a.stop.poi.perCapita || a.stop.score - b.stop.score)[0];
+    if (!drop) break;
+    stops = stops.filter((_, idx) => idx !== drop.idx);
+    changed.push(drop.stop.poi.id);
+    messages.push(`移除高人均节点「${drop.stop.poi.name}」`);
   }
 
   return { stops, changed, messages, beforeCost, afterCost: stopTotalCost(stops) };
@@ -215,6 +242,20 @@ export function applyRefine(
 
   switch (action.kind) {
     case 'replaceCategory': {
+      if (!action.category && action.criterion === 'cheaper' && cons.budgetPerCapita != null) {
+        const budgetPatch = tightenBudgetStops(stops, cons.budgetPerCapita, allScored);
+        stops = budgetPatch.stops;
+        changed.push(...budgetPatch.changed);
+        if (budgetPatch.changed.length) {
+          message = `已按预算优先调整: ${budgetPatch.messages.join('、')},人均从 ¥${budgetPatch.beforeCost} 降到 ¥${budgetPatch.afterCost},${budgetOutcome(budgetPatch.afterCost, cons.budgetPerCapita)}。`;
+        } else if (budgetPatch.afterCost <= cons.budgetPerCapita) {
+          message = `当前人均 ¥${budgetPatch.afterCost} 已在预算内,未改动路线。`;
+        } else {
+          message = `已检查候选池,当前最低仍为 ¥${budgetPatch.afterCost},仍超预算 ${Math.round((budgetPatch.afterCost / cons.budgetPerCapita - 1) * 100)}%,建议减少一站或放宽区域。`;
+        }
+        break;
+      }
+
       // 找到要替换的节点(指定类目;未指定则取移动后最差分节点)
       let targetIdx = action.category
         ? stops.findIndex((s) => s.poi.category === action.category)
@@ -264,10 +305,13 @@ export function applyRefine(
       if (budgetPatch.changed.length) {
         const resultText = budgetPatch.afterCost <= action.budget!
           ? `已落在预算内`
-          : `仍略高于预算,建议少走一站或继续点「便宜一点」`;
+          : budgetOutcome(budgetPatch.afterCost, action.budget!);
         message = `预算降到 ¥${action.budget}: ${budgetPatch.messages.join('、')},人均从 ¥${budgetPatch.beforeCost} 降到 ¥${budgetPatch.afterCost},${resultText}。`;
       } else {
-        message = `预算已设为 ¥${action.budget},但未找到更便宜的同类替换,请考虑减少 POI。`;
+        const afterCost = budgetPatch.afterCost;
+        message = afterCost <= action.budget!
+          ? `预算已设为 ¥${action.budget},当前路线已在预算内。`
+          : `预算已设为 ¥${action.budget},已检查候选池,${budgetOutcome(afterCost, action.budget!)}。`;
       }
       break;
     }
