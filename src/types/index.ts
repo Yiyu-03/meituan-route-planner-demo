@@ -315,6 +315,7 @@ export interface RefineAction {
     | 'replaceCategory'   // 换某类目里的某一家
     | 'setBudget'         // 调整预算
     | 'relaxPace'         // 不要太赶
+    | 'reduceTravel'      // 车程太久/太远,压缩移动距离
     | 'packPace'          // 再多逛点
     | 'addPreference'     // 加一个偏好(如拍照)
     | 'unknown';

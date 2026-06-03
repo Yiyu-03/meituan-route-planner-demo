@@ -25,6 +25,16 @@ function normalizePath(path) {
   };
 }
 
+async function fetchWithTimeout(url, timeoutMs = 900) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   if (!['GET', 'POST'].includes(req.method)) {
@@ -55,7 +65,7 @@ export default async function handler(req, res) {
   const params = new URLSearchParams({ key, origin, destination });
 
   try {
-    const upstream = await fetch(`https://restapi.amap.com/v3/direction/walking?${params.toString()}`);
+    const upstream = await fetchWithTimeout(`https://restapi.amap.com/v3/direction/walking?${params.toString()}`);
     const data = await upstream.json();
     if (data.status !== '1') {
       return send(res, 502, {

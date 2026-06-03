@@ -12,6 +12,10 @@ function fmtH(h: number): string {
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
+const MAX_LEG_DISTANCE_M = 12000;
+const MAX_LEG_MINUTES = 45;
+const MAX_WALK_MINUTES = 25;
+
 export function validateRoute(
   route: Route, c: Constraints, persona: Persona,
 ): Check[] {
@@ -58,10 +62,33 @@ export function validateRoute(
 
   // 3) 交通时间:总交通(地铁/打车)占比
   const transitRatio = route.totalTransitMin / Math.max(1, route.totalWalkMin + route.totalTransitMin);
+  const mobilityProblems = route.stops
+    .filter((s) => {
+      const leg = s.legFromPrev;
+      if (!leg) return false;
+      if (leg.distM > MAX_LEG_DISTANCE_M) return true;
+      if (leg.minutes > MAX_LEG_MINUTES) return true;
+      if (leg.mode === 'walk' && leg.minutes > MAX_WALK_MINUTES) return true;
+      return false;
+    })
+    .map((s) => {
+      const leg = s.legFromPrev!;
+      return `${s.scored.poi.name} 前一段 ${leg.minutes} 分钟/${(leg.distM / 1000).toFixed(1)}km`;
+    });
+  const totalMove = route.totalWalkMin + route.totalTransitMin;
+  const durMin = Math.max(1, c.durationMin);
+  checks.push({
+    key: 'mobility',
+    label: '移动距离',
+    status: mobilityProblems.length ? 'fail' : totalMove > Math.min(90, durMin * 0.35) ? 'warn' : 'pass',
+    detail: mobilityProblems.length
+      ? `移动过长:${mobilityProblems.join(';')}`
+      : `单段移动可控,总移动约 ${totalMove} 分钟`,
+  });
   checks.push({
     key: 'transit',
     label: '交通时间',
-    status: route.totalTransitMin > 50 ? 'warn' : 'pass',
+    status: route.totalTransitMin > Math.min(70, durMin * 0.3) ? 'warn' : 'pass',
     detail: `地铁/打车约 ${route.totalTransitMin} 分钟,步行 ${route.totalWalkMin} 分钟`,
   });
 

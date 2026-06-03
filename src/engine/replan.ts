@@ -45,6 +45,9 @@ export function parseRefine(text: string): RefineAction {
   }
 
   // 节奏
+  if (/车程太久|车程太长|路程太久|路程太长|太远|离太远|不想坐太久车|少打车|少坐车|近一点|近点|距离短|少跑/.test(raw)) {
+    return { kind: 'reduceTravel', raw, note: '压缩移动距离:优先保留同一区域/更近 POI,必要时减少一站' };
+  }
   if (/不要太赶|别太赶|太赶|慢一点|轻松点|不想太累|太累/.test(raw)) {
     return { kind: 'relaxPace', raw, note: '放慢节奏:移除移动成本最高的 1 个节点,其余保留' };
   }
@@ -190,6 +193,41 @@ function canDropForBudget(stops: ScoredPOI[], idx: number, c: Constraints): bool
     if (!remaining.some((pick) => pick.poi.category === cat)) return false;
   }
   return canKeepDiversityAfterDrop(stops, idx) || c.pace === 'relaxed';
+}
+
+function canDropForTravel(stops: ScoredPOI[], idx: number, c: Constraints): boolean {
+  if (stops.length <= minStopCount(c)) return false;
+  const stop = stops[idx];
+  if (stop.poi.category === 'dining' && mealRequested(c)) return false;
+  const remaining = stops.filter((_, i) => i !== idx);
+  for (const cat of c.mustCategories) {
+    if (!remaining.some((pick) => pick.poi.category === cat)) return false;
+  }
+  return true;
+}
+
+function travelBurdenIndex(stops: ScoredPOI[]): number {
+  if (stops.length <= 2) return -1;
+  let bestIdx = -1;
+  let bestCost = -Infinity;
+  for (let idx = 0; idx < stops.length; idx += 1) {
+    const prev = stops[idx - 1];
+    const next = stops[idx + 1];
+    const cost = (prev ? distBetween(prev.poi, stops[idx].poi) : 0)
+      + (next ? distBetween(stops[idx].poi, next.poi) : 0);
+    if (cost > bestCost) {
+      bestCost = cost;
+      bestIdx = idx;
+    }
+  }
+  return bestIdx;
+}
+
+function neighborDistanceCost(stops: ScoredPOI[], idx: number, candidate: ScoredPOI): number {
+  const prev = stops[idx - 1];
+  const next = stops[idx + 1];
+  return (prev ? distBetween(prev.poi, candidate.poi) : 0)
+    + (next ? distBetween(candidate.poi, next.poi) : 0);
 }
 
 function tightenBudgetStops(
@@ -418,6 +456,40 @@ export function applyRefine(
         message = `已放慢节奏:移除移动成本最高的「${dropped.poi.name}」,保留其余 ${stops.length} 站。`;
       } else {
         message = '已设为舒缓节奏,当前结构已较紧凑,无需删减。';
+      }
+      break;
+    }
+
+    case 'reduceTravel': {
+      cons.pace = 'relaxed';
+      const targetIdx = travelBurdenIndex(stops);
+      if (targetIdx < 0) {
+        message = '当前路线站点较少,已保持轻量节奏。';
+        break;
+      }
+      const old = stops[targetIdx];
+      const oldCost = neighborDistanceCost(stops, targetIdx, old);
+      const pool = allScored
+        .filter((s) =>
+          !currentIds.has(s.poi.id)
+          && s.poi.category === old.poi.category)
+        .sort((a, b) =>
+          neighborDistanceCost(stops, targetIdx, a) - neighborDistanceCost(stops, targetIdx, b)
+          || b.score - a.score);
+      const repl = pool.find((item) => neighborDistanceCost(stops, targetIdx, item) < oldCost * 0.75);
+      if (repl) {
+        stops[targetIdx] = repl;
+        changed.push(repl.poi.id);
+        message = `已压缩移动距离:将「${old.poi.name}」换成更近的「${repl.poi.name}」。`;
+        break;
+      }
+
+      if (canDropForTravel(stops, targetIdx, cons)) {
+        stops = stops.filter((_, idx) => idx !== targetIdx);
+        changed.push(old.poi.id);
+        message = `已压缩移动距离:移除造成跨区移动的「${old.poi.name}」,保留更近的 ${stops.length} 站。`;
+      } else {
+        message = '已识别为缩短车程需求,但当前必选类目较多,没有可安全移除的站点。';
       }
       break;
     }

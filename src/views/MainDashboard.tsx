@@ -306,11 +306,28 @@ function understoodChips(plan: PlanResult, persona: Persona) {
   return [...new Set(chips)].slice(0, 8);
 }
 
-function budgetMeta(route: Route, budget: number | null): {
+function budgetMeta(route: Route, constraints: Constraints): {
   value: string;
   tone: 'neutral' | 'green' | 'amber' | 'red';
   helper: string;
 } {
+  const budget = constraints.budgetPerCapita;
+  if (budget == null && constraints.diningBudgetPerCapita != null) {
+    const meal = route.stops.find((stop) => stop.scored.poi.category === 'dining');
+    if (!meal) {
+      return {
+        value: `午饭预算 ≤¥${constraints.diningBudgetPerCapita}`,
+        tone: 'neutral',
+        helper: '未安排正餐，不计入全程预算',
+      };
+    }
+    const over = meal.scored.poi.perCapita > constraints.diningBudgetPerCapita;
+    return {
+      value: `午饭估算 ¥${meal.scored.poi.perCapita} / ¥${constraints.diningBudgetPerCapita}`,
+      tone: over ? 'amber' : 'green',
+      helper: over ? '正餐略超预算' : '午饭预算内',
+    };
+  }
   const verdict = budgetVerdict(route.totalCost, budget);
   const tone = verdict.tone === 'ok' ? 'green' : verdict.tone === 'warn' ? 'amber' : 'red';
   return { value: verdict.display, tone, helper: verdict.label };
@@ -323,7 +340,7 @@ function budgetGuidance(route: Route, budget: number | null): string {
 }
 
 function importantChecks(route: Route) {
-  const keys = ['budget', 'queue', 'open'];
+  const keys = ['budget', 'mobility', 'open', 'coverage', 'queue'];
   return keys
     .map((key) => route.checks.find((check) => check.key === key))
     .filter(Boolean)
@@ -406,7 +423,7 @@ export function MainDashboard() {
   const activeRoute = safeRoute(activeSession);
   const activePersona = PERSONA_MAP[activeSession.plan.personaId] ?? PERSONA_MAP.solo;
   const risk = routeRisk(activeRoute);
-  const budget = budgetMeta(activeRoute, activeSession.plan.constraints.budgetPerCapita);
+  const budget = budgetMeta(activeRoute, activeSession.plan.constraints);
   const understood = understoodChips(activeSession.plan, activePersona);
   const quickActions = useMemo(
     () => buildReplanChips(activeRoute, activeSession.plan.constraints),
@@ -924,10 +941,12 @@ function RouteCover({
 }) {
   const movement = travelSummary(route);
   const budgetOver = budget.tone === 'amber' || budget.tone === 'red';
+  const needsAdjustment = risk.tone === 'red' || risk.tone === 'amber' || budgetOver;
+  const stampText = risk.tone === 'red' ? '需调整' : needsAdjustment ? '建议调整' : '拿来就走';
   return (
     <section className="relative overflow-hidden rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] p-4 shadow-[0_10px_24px_rgba(68,50,31,.08)]">
-      <div className={`travel-route-stamp ${budgetOver ? 'travel-route-stamp-warning' : ''}`}>
-        {budgetOver ? '超预算·建议调整' : '拿来就走'}
+      <div className={`travel-route-stamp ${needsAdjustment ? 'travel-route-stamp-warning' : ''}`}>
+        {stampText}
       </div>
       <div className="max-w-3xl">
         <p className="mb-2 flex items-center gap-2 text-[12px] font-semibold tracking-[0.2em] text-[#8A765F]">

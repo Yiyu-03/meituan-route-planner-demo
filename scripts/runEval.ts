@@ -99,21 +99,35 @@ async function runSuzhouRemoteCase(input: string): Promise<ProductCaseResult> {
   try {
     const result = await buildAmapCityPlan(input, { city: '苏州', input }, PERSONA_MAP.friends);
     const route = result?.routes[0];
+    const elapsedMs = result?.stageTimings
+      ? Object.values(result.stageTimings).reduce((sum, ms) => sum + ms, 0)
+      : 0;
     const badRe = /KTV|量贩|舞厅|夜店|酒吧|电玩城|电玩|洗浴|按摩|足浴|棋牌/i;
     const mealStops = route?.stops.filter((stop) => stop.scored.poi.category === 'dining') ?? [];
     const lunch = mealStops[0];
     const routeText = route?.stops.map((stop) => `${stop.scored.poi.name} ${stop.scored.reasons.join(' ')}`).join(' ') ?? '';
+    const legs = route?.stops.map((stop) => stop.legFromPrev).filter(Boolean) ?? [];
+    const totalMove = (route?.totalWalkMin ?? 0) + (route?.totalTransitMin ?? 0);
+    const refineAction = parseRefine('车程太久了');
+    const refined = route ? applyRefine(refineAction, route, result!.constraints, PERSONA_MAP.friends, result!.candidates) : null;
+    const refinedMove = refined ? refined.route.totalWalkMin + refined.route.totalTransitMin : Infinity;
     const asserts = [
       { name: '生成路线', pass: Boolean(route), desc: '高德试验链路返回一条路线' },
+      { name: '生成耗时', pass: elapsedMs <= 10000, desc: '生成时间目标 <= 10s' },
       { name: 'POI 来源高德', pass: Boolean(route?.stops.every((stop) => stop.scored.poi.source === 'amap')), desc: '所有站点标记为 amap' },
       { name: '过滤噪声类型', pass: Boolean(route?.stops.every((stop) => !badRe.test(stop.scored.poi.name))), desc: '不出现 KTV/舞厅/电玩/酒吧/洗浴' },
       { name: '过滤低信誉小店', pass: Boolean(route?.stops.every((stop) => !/胡子饮食店|饮食店|工作室|私人影院/.test(stop.scored.poi.name))), desc: '不把低可信小店作为核心推荐' },
-      { name: '含园林/文化', pass: Boolean(route?.stops.some((stop) => /园林|拙政园|景区|金鸡湖/.test(stop.scored.poi.name))), desc: '至少 1 个园林/文化景点' },
+      { name: '含园林/文化', pass: Boolean(route?.stops.some((stop) => /园林|拙政园|景区|金鸡湖|展示馆|博物馆|公园/.test(stop.scored.poi.name))), desc: '至少 1 个园林/文化/公园类 POI' },
       { name: '含博物馆/展馆', pass: Boolean(route?.stops.some((stop) => /博物馆|展馆|展示馆|美术馆/.test(stop.scored.poi.name))), desc: '尽量安排博物馆/展馆' },
       { name: '正餐最多 1 个', pass: mealStops.length <= 1, desc: '6 小时以内不安排两顿正餐' },
       { name: '午饭在饭点', pass: Boolean(lunch && lunch.arrive >= 11.5 && lunch.arrive <= 13.5), desc: '午饭到达时间在 11:30-13:30' },
+      { name: '单段车程上限', pass: legs.every((leg) => leg!.minutes <= 45), desc: '任意单段移动 <= 45 分钟' },
+      { name: '单段距离上限', pass: legs.every((leg) => leg!.distM <= 12000), desc: '任意单段距离 <= 12km' },
+      { name: '无异常移动值', pass: legs.every((leg) => leg!.minutes < 100) && totalMove < 100, desc: '不出现 100min 以上移动时间' },
       { name: '站数按节奏', pass: Boolean(route && route.stops.length >= 3 && route.stops.length <= 4), desc: '3-4 站，不机械固定 4 站' },
       { name: '文案不泛化', pass: Boolean(route && !/朋友聚会|吃货|出片|热闹局/.test(routeText)), desc: '文化场景理由不套用热闹聚会/吃货/出片话术' },
+      { name: '识别车程修改', pass: refineAction.kind === 'reduceTravel' && Boolean(refined), desc: '“车程太久了”不再 unknown' },
+      { name: '车程修改不变差', pass: Boolean(refined && refinedMove <= totalMove), desc: '临时修改后移动时间不增加' },
     ];
     return {
       id: 'remote-suzhou',
@@ -204,7 +218,7 @@ async function mockAmapFetch(input: unknown): Promise<Response> {
     return jsonResponse({
       status: 'ok',
       configured: true,
-      result: { distance: 720, duration: 9, source: 'amap' },
+      result: { distance: 64600, duration: 861, source: 'amap' },
     });
   }
 

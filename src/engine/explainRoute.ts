@@ -37,7 +37,9 @@ export function explainRoute(
   } else if (c.diningBudgetPerCapita != null) {
     const meals = stops.filter((s) => s.scored.poi.category === 'dining');
     const mealCost = meals.reduce((sum, stop) => sum + stop.scored.poi.perCapita, 0);
-    parts.push(`正餐¥${mealCost || 0}/¥${c.diningBudgetPerCapita}`);
+    parts.push(mealCost > 0
+      ? `午饭估算¥${mealCost}/¥${c.diningBudgetPerCapita}`
+      : `午饭预算≤¥${c.diningBudgetPerCapita}`);
   } else {
     parts.push(`人均¥${route.totalCost}`);
   }

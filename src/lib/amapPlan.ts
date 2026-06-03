@@ -52,6 +52,10 @@ interface AmapRouteResponse {
   };
 }
 
+interface AmapFetchOptions {
+  timeoutMs?: number;
+}
+
 const LABELS: Record<AgentStageKey, string> = {
   parseIntent: '意图抽取',
   inferPersona: '画像推断',
@@ -72,14 +76,50 @@ const MEAL_RE = /吃饭|午饭|午餐|晚饭|晚餐|美食|餐厅|正餐|吃点/
 const LOW_TRUST_AMAP_RE = /私人影院|工作室|量贩|会所|KTV|歌厅|舞厅|酒吧|夜店|洗浴|按摩|足浴|电玩|电玩城|棋牌|麻将|网吧|饮食店|快餐|便利店|小卖部|食杂|成人|养生|采耳/i;
 const TRUSTED_DINING_RE = /餐厅|中餐|西餐|本帮|杭帮|苏帮|菜馆|酒楼|饭店|食府|火锅|烧烤|面馆|茶餐厅|咖啡|轻食|小馆/;
 const TRUSTED_CULTURE_RE = /园林|博物馆|博物院|美术馆|展馆|展览馆|纪念馆|图书馆|艺术馆|公园|景区|风景|名胜|古迹|历史|文化|西湖|湖|街区|古镇/;
+const POI_SEARCH_TIMEOUT_MS = 1800;
+const ROUTE_WALK_TIMEOUT_MS = 900;
+const MAX_LEG_DISTANCE_M = 12000;
+const MAX_LEG_MINUTES = 45;
+const MAX_WALK_MINUTES = 25;
+const AREA_RADIUS_M = 6500;
+const CITY_RADIUS_M = 22000;
+
+const AREA_CENTERS: Record<string, { lng: number; lat: number; aliases: string[] }> = {
+  suzhou_industrial_park: {
+    lng: 120.706,
+    lat: 31.318,
+    aliases: ['苏州工业园区', '工业园区', '园区', '金鸡湖', '东方之门', '诚品'],
+  },
+  hangzhou_westlake: {
+    lng: 120.145,
+    lat: 30.252,
+    aliases: ['西湖', '西湖附近', '湖滨', '断桥', '孤山'],
+  },
+};
 
 function getAmapCityName(city: string, raw: string): string {
   return KNOWN_CITY_NAMES.find((name) => city.includes(name) || raw.includes(name)) ?? city.split('/')[0] ?? '上海';
 }
 
 function getAreaKeyword(raw: string, city: string): string {
+  if (/苏州/.test(raw) && /工业园区|园区|金鸡湖|东方之门|诚品/.test(raw)) return '苏州工业园区 金鸡湖';
+  if (/杭州/.test(raw) && /西湖|湖滨|断桥|孤山/.test(raw)) return '西湖附近';
   const areaWords = ['余杭', '西湖', '拱墅', '萧山', '滨江', '三里屯', '国贸', '海淀', '南山', '福田', '天河', '新街口', '姑苏', '工业园区', '园区', '金鸡湖', '太古里'];
   return areaWords.find((word) => raw.includes(word)) ?? city.split('/')[1] ?? '';
+}
+
+function areaCenterFor(raw: string): { lng: number; lat: number; radiusM: number; label: string } | null {
+  for (const [label, center] of Object.entries(AREA_CENTERS)) {
+    if (center.aliases.some((alias) => raw.includes(alias))) {
+      return { lng: center.lng, lat: center.lat, radiusM: AREA_RADIUS_M, label };
+    }
+  }
+  return null;
+}
+
+function poiDistanceToAreaM(poi: POI, areaCenter: { lng: number; lat: number } | null): number {
+  if (!areaCenter) return 0;
+  return Math.round(haversineM(areaCenter.lat, areaCenter.lng, poi.lat, poi.lng));
 }
 
 function hasCultureWalkIntent(raw: string): boolean {
@@ -265,26 +305,38 @@ function passesAmapQuality(poi: POI, constraints: Constraints): boolean {
   return matchesAmapIntent(poi, constraints);
 }
 
-async function fetchJson(url: string): Promise<unknown> {
-  const response = await fetch(url);
-  const contentType = response.headers.get('content-type') ?? '';
-  if (!contentType.includes('application/json')) return null;
-  return response.json();
+async function fetchJson(url: string, options: AmapFetchOptions = {}): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? POI_SEARCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) return null;
+    return response.json();
+  } catch {
+    return null;
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
 }
 
 async function retrieveAmapPois(raw: string, city: string, area: string): Promise<{ pois: AmapPoiResult[]; configured: boolean }> {
   const found: AmapPoiResult[] = [];
   let configured = false;
   const seen = new Set<string>();
-  for (const keyword of queryKeywords(raw)) {
+  const responses = await Promise.all(queryKeywords(raw).map(async (keyword) => {
     const params = new URLSearchParams({
       keyword,
       city,
       area,
       limit: '8',
     });
-    const data = await fetchJson(`/api/amap/poi-search?${params.toString()}`) as AmapPoiResponse | null;
-    if (!data || data.status === 'not_configured') return { pois: [], configured: false };
+    return fetchJson(`/api/amap/poi-search?${params.toString()}`, { timeoutMs: POI_SEARCH_TIMEOUT_MS }) as Promise<AmapPoiResponse | null>;
+  }));
+
+  for (const data of responses) {
+    if (!data) continue;
+    if (data.status === 'not_configured') return { pois: [], configured: false };
     if (data.status === 'ok' && data.configured) configured = true;
     for (const item of data.results ?? []) {
       const key = `${item.name}-${item.location}`;
@@ -293,6 +345,7 @@ async function retrieveAmapPois(raw: string, city: string, area: string): Promis
       found.push(item);
     }
   }
+  if (!found.length) return { pois: [], configured };
   return { pois: found.slice(0, 24), configured };
 }
 
@@ -394,21 +447,32 @@ function fallbackLeg(from: POI, to: POI): { distM: number; minutes: number; mode
   const distM = Math.round(haversineM(from.lat, from.lng, to.lat, to.lng));
   const walkMinutes = Math.max(3, Math.round(distM / 80));
   if (walkMinutes > 28) {
-    return { distM, minutes: Math.max(12, Math.round(walkMinutes * 0.45)), mode: 'transit', etaSource: 'amap', etaConfidence: 0.55 };
+    return { distM, minutes: Math.min(MAX_LEG_MINUTES + 1, Math.max(12, Math.round(walkMinutes * 0.35))), mode: 'transit', etaSource: 'amap', etaConfidence: 0.45 };
   }
   return { distM, minutes: walkMinutes, mode: 'walk', etaSource: 'amap', etaConfidence: 0.65 };
+}
+
+function isLegUsable(distM: number, minutes: number, mode: LegMode): boolean {
+  if (!Number.isFinite(distM) || !Number.isFinite(minutes)) return false;
+  if (distM <= 0 || minutes <= 0) return false;
+  if (distM > MAX_LEG_DISTANCE_M) return false;
+  if (minutes > MAX_LEG_MINUTES) return false;
+  if (mode === 'walk' && minutes > MAX_WALK_MINUTES) return false;
+  return true;
 }
 
 async function estimateLeg(from: POI, to: POI) {
   const origin = `${from.lng},${from.lat}`;
   const destination = `${to.lng},${to.lat}`;
   const params = new URLSearchParams({ origin, destination });
-  const data = await fetchJson(`/api/amap/route-walking?${params.toString()}`) as AmapRouteResponse | null;
+  const data = await fetchJson(`/api/amap/route-walking?${params.toString()}`, { timeoutMs: ROUTE_WALK_TIMEOUT_MS }) as AmapRouteResponse | null;
   if (data?.status === 'ok' && data.result?.distance != null && data.result.duration != null) {
     const distM = Math.round(data.result.distance);
     const minutes = Math.max(2, Math.round(data.result.duration));
     const mode: LegMode = minutes > 28 ? 'transit' : 'walk';
-    return { distM, minutes, mode, etaSource: 'amap' as const, etaConfidence: 0.9 };
+    if (isLegUsable(distM, minutes, mode)) {
+      return { distM, minutes, mode, etaSource: 'amap' as const, etaConfidence: 0.9 };
+    }
   }
   return fallbackLeg(from, to);
 }
@@ -663,7 +727,11 @@ export async function buildAmapCityPlan(
     .map((item, index) => toPoi(item, index, constraints))
     .filter((item): item is POI => Boolean(item))
     .filter((poi) => !isBlockedAmapPoi(poi, constraints));
-  const strictPois = rawPois.filter((poi) => passesAmapQuality(poi, constraints));
+  const areaCenter = areaCenterFor(raw);
+  const areaFiltered = areaCenter
+    ? rawPois.filter((poi) => poiDistanceToAreaM(poi, areaCenter) <= areaCenter.radiusM)
+    : rawPois;
+  const strictPois = areaFiltered.filter((poi) => passesAmapQuality(poi, constraints));
   const minQualityStops = targetStopCount(constraints) <= 2 ? 2 : 3;
   const pois = strictPois.length >= minQualityStops ? strictPois : strictPois.slice(0, Math.max(2, strictPois.length));
   if (pois.length < 2) return null;
@@ -673,6 +741,11 @@ export async function buildAmapCityPlan(
 
   const tScore = performance.now();
   const candidates = scorePOIs(pois, constraints, persona, centerLat, centerLng)
+    .map((candidate) => {
+      const distancePenalty = areaCenter ? Math.min(18, poiDistanceToAreaM(candidate.poi, areaCenter) / 450) : 0;
+      return { ...candidate, score: Math.max(0, +(candidate.score - distancePenalty).toFixed(1)) };
+    })
+    .sort((a, b) => b.score - a.score)
     .map((candidate) => rewriteAmapReasons(candidate, constraints));
   timings.score = +(performance.now() - tScore).toFixed(2);
   traceStep(trace, 'scorePOIs', `${pois.length} 个高德 POI`, strictPois.length < rawPois.length ? '已过滤低可信/冲突业态后评分' : '按画像/预算/偏好做本地规则评分', timings.score);
@@ -722,6 +795,6 @@ export async function buildAmapCityPlan(
     agentTrace: trace,
     repairLog: budgetRepair.logs,
     slotPlan: route.coverage,
-    retrieveNote: `非上海试验链路:POI 来自高德 Web 服务(${amapCity}${area ? `/${area}` : ''});已过滤低可信/冲突业态 ${Math.max(0, rawPois.length - pois.length)} 个;价格、排队、偏好解释仍由本地规则估算。`,
+    retrieveNote: `非上海试验链路:POI 来自高德 Web 服务(${amapCity}${area ? `/${area}` : ''});${areaCenter ? '已按明确区域收紧半径;' : ''}已过滤低可信/冲突业态 ${Math.max(0, rawPois.length - pois.length)} 个;价格、排队、偏好解释仍由本地规则估算。`,
   };
 }
