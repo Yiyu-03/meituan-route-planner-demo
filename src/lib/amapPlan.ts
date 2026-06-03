@@ -237,7 +237,7 @@ function isBlockedAmapPoi(poi: POI, constraints: Constraints): boolean {
   if (ADULT_OR_NOISY_POI_RE.test(text) && !explicitNoisy) return true;
   if (LOW_TRUST_AMAP_RE.test(text) && !explicitNoisy) return true;
   if (poi.category === 'dining' && wantsMeal(constraints.raw) && ODD_DINING_RE.test(text)) return true;
-  if (NON_ROUTE_PLACE_RE.test(text) && poi.category !== 'dining' && poi.category !== 'cafe') return true;
+  if (NON_ROUTE_PLACE_RE.test(text) && poi.category !== 'dining') return true;
   if (hasCultureWalkIntent(constraints.raw) && !explicitNoisy && (poi.category === 'entertainment' || poi.category === 'nightscape')) return true;
   if ((constraints.prefs.includes('quiet') || /安静|接电话|打电话|开会/.test(constraints.raw)) && !explicitNoisy && poi.category === 'entertainment') return true;
   return false;
