@@ -1,5 +1,10 @@
 import type { Category, Constraints, Persona } from '../types';
-import { isQuietIntent, wantsAdultNightlife, wantsNightView } from '../engine/semanticGuards';
+import {
+  hasCultureLeisureIntent,
+  isQuietIntent,
+  wantsAdultNightlife,
+  wantsNightView,
+} from '../engine/semanticGuards';
 
 const TEMPLATES: Record<string, Category[]> = {
   'couple.afternoon': ['culture', 'cafe', 'dining', 'nightscape'],
@@ -20,6 +25,19 @@ function timeBucket(c: Constraints): 'day' | 'afternoon' | 'night' {
 
 export function slotTemplateFor(c: Constraints, persona: Persona): Category[] {
   const bucket = timeBucket(c);
+  const cultureLeisure = hasCultureLeisureIntent(c);
+  const explicitCultureRoute = /园林|博物馆|博物院|美术馆|展|展馆|citywalk|逛|西湖|文化|历史|轻松|慢慢/.test(c.raw);
+  const hasMeal = c.mustCategories.includes('dining') || /吃饭|午饭|午餐|晚饭|晚餐|正餐|美食/.test(c.raw);
+  if (cultureLeisure && explicitCultureRoute && !wantsNightView(c) && !wantsAdultNightlife(c)) {
+    const culturalSlots: Category[] = hasMeal
+      ? ['culture', 'dining', 'culture', 'cafe']
+      : ['culture', 'cafe', 'shopping', 'culture'];
+    for (const cat of c.mustCategories) {
+      if (!culturalSlots.includes(cat) && cat !== 'entertainment') culturalSlots.unshift(cat);
+    }
+    return culturalSlots;
+  }
+
   const base = TEMPLATES[`${persona.id}.${bucket}`] ?? TEMPLATES[`${persona.id}.afternoon`] ?? ['culture', 'cafe', 'dining'];
   const slots = [...base];
 
@@ -38,7 +56,7 @@ export function slotTemplateFor(c: Constraints, persona: Persona): Category[] {
   const quietWithoutNightAsk = isQuietIntent(c) && !wantsAdultNightlife(c) && !wantsNightView(c);
   if (quietWithoutNightAsk && !c.mustCategories.includes('nightscape')) {
     const idx = slots.indexOf('nightscape');
-    if (idx >= 0) slots[idx] = slots.includes('culture') ? 'shopping' : 'culture';
+    if (idx >= 0) slots[idx] = 'shopping';
   }
 
   if (c.avoidCategories.length) {
@@ -49,7 +67,7 @@ export function slotTemplateFor(c: Constraints, persona: Persona): Category[] {
 
   const durH = c.durationMin / 60;
   let n = durH <= 2.5 ? 3 : durH <= 4 ? 4 : 5;
-  if (c.pace === 'relaxed') n = Math.max(3, n - 1);
+  if (c.pace === 'relaxed') n = Math.max(durH <= 3 ? 2 : 3, n - 1);
   if (c.pace === 'packed') n = Math.min(5, n + 1);
 
   const fillers: Category[] = persona.id === 'solo'

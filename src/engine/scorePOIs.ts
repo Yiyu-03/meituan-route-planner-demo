@@ -5,6 +5,7 @@ import { SCENE_LABEL } from '../types';
 import { haversineM } from './geo';
 import {
   hasExplicitFamilyIntent,
+  hasCultureLeisureIntent,
   isAdultNightlifePOI,
   isQuietIntent,
   isStrongFamilyPOI,
@@ -74,11 +75,12 @@ function prefMatchScore(p: POI, c: Constraints): { v: number; hits: SceneTag[] }
 
 /** 预算契合:相对人均预算,越接近越好;超预算按敏感度惩罚 */
 function budgetFitScore(p: POI, c: Constraints, persona: Persona): { v: number; over: boolean } {
-  if (c.budgetPerCapita == null) {
+  const budget = c.budgetPerCapita ?? (p.category === 'dining' ? c.diningBudgetPerCapita ?? null : null);
+  if (budget == null) {
     // 无预算 → 中性偏好平价
     return { v: clamp(1 - p.perCapita / 600), over: false };
   }
-  const ratio = p.perCapita / c.budgetPerCapita;
+  const ratio = p.perCapita / budget;
   if (ratio <= 1) {
     // 不超预算:0.6~1.0(太便宜略减,体现"匹配档次")
     return { v: clamp(0.6 + 0.4 * (1 - Math.abs(0.7 - ratio))), over: false };
@@ -140,6 +142,7 @@ function semanticPenalty(p: POI, c: Constraints, persona: Persona): number {
   const explicitFamily = hasExplicitFamilyIntent(c);
   const adultNightWanted = wantsAdultNightlife(c);
   const quietMode = isQuietIntent(c);
+  const cultureLeisureMode = hasCultureLeisureIntent(c);
   const avoidQueue = /少排队|别排队|不要排队|不想排队|少等位|别等位|不要等位/.test(c.raw);
 
   if ((explicitFamily || persona.id === 'family') && isAdultNightlifePOI(p) && !adultNightWanted) {
@@ -156,6 +159,15 @@ function semanticPenalty(p: POI, c: Constraints, persona: Persona): number {
   }
   if (quietMode && p.category === 'entertainment' && !c.mustCategories.includes('entertainment')) {
     penalty += 10;
+  }
+  if (cultureLeisureMode && p.category === 'entertainment' && !c.mustCategories.includes('entertainment')) {
+    penalty += 22;
+  }
+  if (cultureLeisureMode && p.category === 'nightscape' && !wantsNightView(c) && !adultNightWanted) {
+    penalty += 16;
+  }
+  if (cultureLeisureMode && p.category === 'culture') {
+    penalty -= 8;
   }
   if (avoidQueue && p.queueBase >= 0.65) {
     penalty += 10;
@@ -176,9 +188,20 @@ function buildReasons(
   budgetOver: boolean,
 ): string[] {
   const r: string[] = [];
+  const cultureLeisureMode = hasCultureLeisureIntent(c);
+
+  if (cultureLeisureMode) {
+    if (p.category === 'culture') {
+      r.push('贴合这次文化/轻量游览需求，适合慢逛');
+    } else if (p.category === 'dining') {
+      r.push(c.diningBudgetPerCapita != null ? '正餐预算单独控制，不挤占游览安排' : '正餐安排更贴合这次出行节奏');
+    } else if (p.category === 'cafe') {
+      r.push('作为中途休息点，控制节奏不赶');
+    }
+  }
 
   // 1. 画像场景契合(最高优先)
-  if (sceneHits.length) {
+  if (!cultureLeisureMode && sceneHits.length) {
     const top = sceneHits.slice(0, 2).map((t) => SCENE_LABEL[t]).join('、');
     r.push(`贴合「${persona.label}」偏好:${top}`);
   }
@@ -190,6 +213,9 @@ function buildReasons(
   if (c.budgetPerCapita != null) {
     if (!budgetOver) r.push(`人均 ¥${p.perCapita},在 ¥${c.budgetPerCapita} 预算内`);
     else r.push(`人均 ¥${p.perCapita},略超预算需留意`);
+  } else if (p.category === 'dining' && c.diningBudgetPerCapita != null) {
+    if (!budgetOver) r.push(`正餐人均 ¥${p.perCapita},在 ¥${c.diningBudgetPerCapita} 预算内`);
+    else r.push(`正餐人均 ¥${p.perCapita},略超吃饭预算`);
   }
   // 4. 质量/热度
   if (b.quality >= W.quality * 0.8) r.push(`评分 ${p.rating},口碑突出`);
@@ -203,6 +229,7 @@ function buildReasons(
 export function scorePOI(
   p: POI, c: Constraints, persona: Persona, centerLat: number, centerLng: number,
 ): ScoredPOI {
+  const cultureLeisureMode = hasCultureLeisureIntent(c);
   const quality = qualityScore(p);
   const popularity = popularityScore(p);
   const { v: sceneFit, hits: sceneHits } = sceneFitScore(p, persona);
@@ -214,12 +241,14 @@ export function scorePOI(
 
   // persona 的 categoryPriority 作为类目级乘子(轻微)
   const catBoost = 1 + (persona.categoryPriority[p.category] ?? 0) * 0.12;
+  const sceneWeight = cultureLeisureMode ? W.sceneFit * 0.45 : W.sceneFit;
+  const prefWeight = cultureLeisureMode ? W.prefMatch + 8 : W.prefMatch;
 
   const breakdown: ScoreBreakdown = {
     quality: +(quality * W.quality).toFixed(1),
     popularity: +(popularity * W.popularity).toFixed(1),
-    sceneFit: +(sceneFit * W.sceneFit * catBoost).toFixed(1),
-    prefMatch: +(prefMatch * W.prefMatch).toFixed(1),
+    sceneFit: +(sceneFit * sceneWeight * (cultureLeisureMode ? 1 : catBoost)).toFixed(1),
+    prefMatch: +(prefMatch * prefWeight).toFixed(1),
     budgetFit: +(budgetFit * W.budgetFit).toFixed(1),
     proximity: +(proximity * W.proximity).toFixed(1),
     companionFit: +(companionFit * W.companionFit).toFixed(1),

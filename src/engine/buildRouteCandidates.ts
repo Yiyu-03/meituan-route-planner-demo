@@ -29,7 +29,7 @@ export function planSlots(c: Constraints, persona: Persona): Category[] {
 
   // 期望 POI 数量:时长越长越多,pace=relaxed 减一档,packed 加一档
   let n = durH <= 2.5 ? 3 : durH <= 4 ? 4 : 5;
-  if (c.pace === 'relaxed') n = Math.max(3, n - 1);
+  if (c.pace === 'relaxed') n = Math.max(durH <= 3 ? 2 : 3, n - 1);
   if (c.pace === 'packed') n = Math.min(5, n + 1);
   if (c.budgetPerCapita != null && c.budgetPerCapita <= 320) n = Math.min(n, 4);
   if (c.budgetPerCapita != null && c.budgetPerCapita <= 180) n = Math.min(n, 3);
@@ -233,8 +233,9 @@ export function buildRouteCandidates(
   }
 
   // 把每条 beam 物化成 Route(排顺序 + 算时间轴),交给下游校验/排序
+  const minRouteStops = c.pace === 'relaxed' && slots.length <= 2 ? 2 : 3;
   const routes = beams
-    .filter((b) => b.picks.length >= 3)
+    .filter((b) => b.picks.length >= minRouteStops)
     .slice(0, OUTPUT)
     .map((b, idx) => materializeRoute(b.picks, c, persona, idx));
 

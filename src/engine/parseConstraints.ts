@@ -26,11 +26,11 @@ const AREA_ALIASES: Record<string, string> = {
 // 场景偏好词典(正向)
 const PREF_LEX: { tag: SceneTag; words: string[] }[] = [
   { tag: 'romantic', words: ['浪漫', '约会', '情侣', '氛围', '小资', '情调'] },
-  { tag: 'quiet', words: ['安静', '清净', '安安静静', '不吵', '僻静', '慢'] },
+  { tag: 'quiet', words: ['安静', '清净', '安安静静', '不吵', '僻静', '慢', '轻松', '慢慢逛'] },
   { tag: 'photo', words: ['拍照', '出片', '打卡', '上镜', '好看', '颜值'] },
   { tag: 'family', words: ['带娃', '小孩', '孩子', '亲子', '宝宝', '儿童', '遛娃'] },
   { tag: 'lively', words: ['热闹', '好玩', '气氛', '嗨', '聚会', '聚餐'] },
-  { tag: 'cultural', words: ['文艺', '文化', '艺术', '展', '博物馆', '书店', '历史', '园林'] },
+  { tag: 'cultural', words: ['文艺', '文化', '艺术', '展', '展馆', '博物馆', '博物院', '书店', '历史', '园林', 'citywalk', '逛', '西湖'] },
   { tag: 'trendy', words: ['网红', '潮', '时髦', '新潮', '潮流'] },
   { tag: 'local', words: ['本地', '老上海', '地道', '烟火', '小吃', '特色'] },
   { tag: 'upscale', words: ['精致', '高端', '高档', '正式', '商务', '档次'] },
@@ -43,8 +43,6 @@ const PREF_LEX: { tag: SceneTag; words: string[] }[] = [
 // 规避词:出现「不要X / 别太X / 不想X」时取消该 tag
 const AVOID_PATTERNS: { re: RegExp; tag: SceneTag }[] = [
   { re: /不要(太)?吵|别(太)?吵|太吵/, tag: 'lively' },
-  { re: /不要太累|不想太累|别太累/, tag: 'lively' },
-  { re: /不要太赶|别太赶|不想太赶|不赶/, tag: 'lively' },
   { re: /不要太贵|别太贵|不想太贵|不贵/, tag: 'upscale' },
   { re: /不要(去)?酒吧|不喝酒|没有酒/, tag: 'nightlife' },
 ];
@@ -52,7 +50,7 @@ const AVOID_PATTERNS: { re: RegExp; tag: SceneTag }[] = [
 const CAT_LEX: { cat: Category; words: string[] }[] = [
   { cat: 'dining', words: ['吃饭', '吃', '美食', '正餐', '晚饭', '午饭', '大餐', '餐厅'] },
   { cat: 'cafe', words: ['咖啡', '喝咖啡', '茶', '下午茶', '奶茶'] },
-  { cat: 'culture', words: ['博物馆', '美术馆', '展', '园林', '书店', '历史', '文化', '科技馆'] },
+  { cat: 'culture', words: ['博物馆', '博物院', '美术馆', '展', '展馆', '园林', '书店', '历史', '文化', '科技馆', 'citywalk', '逛', '西湖'] },
   { cat: 'entertainment', words: ['演出', '话剧', '剧场', '电影', '密室', '桌游', '乐园', '玩'] },
   { cat: 'shopping', words: ['逛街', '购物', '商场', '买', '淘'] },
   { cat: 'nightscape', words: ['夜景', '酒吧', '看景', '江景', '登高', '夜游', '灯'] },
@@ -80,9 +78,33 @@ function parseStartTime(raw: string): { hour: number; matched: string[] } {
   return { hour: 14, matched }; // 默认下午 2 点
 }
 
-/** 解析人均预算:「人均X」「X左右」「X以内」「预算X」 */
-function parseBudget(raw: string): { budget: number | null; matched: string[] } {
+/** 解析人均预算:区分「全程预算」和「预算X吃午饭」这类正餐预算。 */
+function parseBudget(raw: string): {
+  budget: number | null;
+  diningBudget: number | null;
+  source: IntentDraft['budgetSource'];
+  matched: string[];
+} {
   const matched: string[] = [];
+  const diningPatterns = [
+    /(?:预算|人均)\s*(\d{2,4})\s*(?:吃午饭|吃午餐|吃晚饭|吃晚餐|吃饭|吃正餐)/,
+    /(?:午饭|午餐|晚饭|晚餐|吃饭|正餐).*?(?:预算|人均)\s*(\d{2,4})/,
+    /(\d{2,4})\s*(?:元|块)?\s*(?:吃午饭|吃午餐|吃晚饭|吃晚餐|吃饭|吃正餐)/,
+  ];
+  for (const p of diningPatterns) {
+    const m = raw.match(p);
+    if (m) {
+      const v = parseInt(m[1], 10);
+      matched.push(`正餐预算¥${v}`);
+      return {
+        budget: null,
+        diningBudget: v,
+        source: 'explicit_dining',
+        matched,
+      };
+    }
+  }
+
   const patterns = [
     /人均\s*(\d{2,4})/,
     /预算\s*(?:人均)?\s*(\d{2,4})/,
@@ -93,10 +115,20 @@ function parseBudget(raw: string): { budget: number | null; matched: string[] } 
     if (m) {
       const v = parseInt(m[1], 10);
       matched.push(`预算¥${v}`);
-      return { budget: v, matched };
+      return {
+        budget: v,
+        diningBudget: null,
+        source: 'explicit_total',
+        matched,
+      };
     }
   }
-  return { budget: null, matched };
+  return {
+    budget: null,
+    diningBudget: null,
+    source: null,
+    matched,
+  };
 }
 
 /** 解析时长/结束时间提示 */
@@ -153,6 +185,18 @@ function parseTransport(raw: string): Constraints['transport'] {
   if (/打车|地铁|公交|开车/.test(raw)) return 'mixed';
   if (/走路|步行|citywalk|散步/.test(raw)) return 'walk';
   return 'mixed';
+}
+
+function hasSoftBudgetIntent(raw: string): boolean {
+  return /不要太贵|别太贵|不想太贵|不贵|预算不高|预算有限|平价|实惠|性价比|便宜一点|便宜点/.test(raw);
+}
+
+function inferSoftBudget(intent: IntentDraft, persona: Persona): number | null {
+  if (!hasSoftBudgetIntent(intent.raw)) return null;
+  const hotArea = intent.areaHits.includes('bund') || /外滩|陆家嘴|新天地/.test(intent.raw);
+  if (persona.id === 'family') return hotArea ? 200 : 180;
+  if (persona.id === 'solo') return hotArea ? 180 : 150;
+  return hotArea ? 220 : 200;
 }
 
 /** 只做文本意图抽取,不注入任何画像默认值。 */
@@ -218,6 +262,8 @@ export function parseIntent(raw: string): IntentDraft {
     durationMin: du.durationMin,
     party: pa.party,
     budgetPerCapita: bu.budget,
+    diningBudgetPerCapita: bu.diningBudget,
+    budgetSource: bu.source,
     prefs: [...prefs],
     avoid: [...avoid],
     mustCategories: [...mustCategories],
@@ -232,13 +278,21 @@ export function parseIntent(raw: string): IntentDraft {
 /** 把 intent + 画像合成为可执行约束。画像只补默认,不覆盖显式文本。 */
 export function finalizeConstraints(intent: IntentDraft, persona: Persona): Constraints {
   const areaTag = intent.areaHits.length ? `@${intent.areaHits.join(',')}` : '';
+  const softBudget = intent.budgetPerCapita == null && intent.diningBudgetPerCapita == null
+    ? inferSoftBudget(intent, persona)
+    : null;
+  const matched = softBudget == null
+    ? intent.matched
+    : [...intent.matched, `软预算¥${softBudget}`];
 
   return {
     city: intent.city + areaTag,
     startTime: intent.startTime,
     durationMin: intent.durationMin,
     party: intent.party || persona.partyDefault,
-    budgetPerCapita: intent.budgetPerCapita,
+    budgetPerCapita: intent.budgetPerCapita ?? softBudget,
+    diningBudgetPerCapita: intent.diningBudgetPerCapita,
+    budgetSource: softBudget == null ? intent.budgetSource : 'soft',
     prefs: intent.prefs,
     avoid: intent.avoid,
     mustCategories: intent.mustCategories,
@@ -246,7 +300,7 @@ export function finalizeConstraints(intent: IntentDraft, persona: Persona): Cons
     transport: intent.transport,
     pace: intent.pace ?? persona.pace,
     raw: intent.raw,
-    matched: intent.matched,
+    matched,
   };
 }
 

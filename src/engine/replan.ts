@@ -164,10 +164,39 @@ function canKeepDiversityAfterDrop(stops: ScoredPOI[], idx: number): boolean {
   return cats.size >= 3;
 }
 
+function mealRequested(c: Constraints): boolean {
+  return /吃饭|午饭|午餐|晚饭|晚餐|正餐|美食/.test(c.raw) || c.mustCategories.includes('dining');
+}
+
+function minStopCount(c: Constraints): number {
+  return c.pace === 'relaxed' && c.durationMin <= 240 ? 2 : 3;
+}
+
+function downgradeCategories(cat: Category, c: Constraints): Category[] {
+  if (cat === 'dining') return mealRequested(c) ? [] : ['cafe'];
+  if (cat === 'nightscape') return ['entertainment', 'cafe', 'culture', 'shopping'];
+  if (cat === 'entertainment') return ['cafe', 'culture', 'shopping'];
+  if (cat === 'shopping') return ['dining', 'cafe', 'culture'];
+  if (cat === 'cafe') return ['culture'];
+  return [];
+}
+
+function canDropForBudget(stops: ScoredPOI[], idx: number, c: Constraints): boolean {
+  if (stops.length <= minStopCount(c)) return false;
+  const stop = stops[idx];
+  if (stop.poi.category === 'dining' && mealRequested(c)) return false;
+  const remaining = stops.filter((_, i) => i !== idx);
+  for (const cat of c.mustCategories) {
+    if (!remaining.some((pick) => pick.poi.category === cat)) return false;
+  }
+  return canKeepDiversityAfterDrop(stops, idx) || c.pace === 'relaxed';
+}
+
 function tightenBudgetStops(
   initialStops: ScoredPOI[],
   budget: number,
   allScored: ScoredPOI[],
+  constraints: Constraints,
   maxRounds = 4,
 ): { stops: ScoredPOI[]; changed: string[]; messages: string[]; beforeCost: number; afterCost: number } {
   let stops = [...initialStops];
@@ -205,10 +234,38 @@ function tightenBudgetStops(
       continue;
     }
 
-    if (stops.length <= 3) break;
+    for (let idx = 0; idx < stops.length; idx++) {
+      const old = stops[idx];
+      const downgradeOrder = downgradeCategories(old.poi.category, constraints);
+      const repl = allScored
+        .filter((s) =>
+          downgradeOrder.includes(s.poi.category)
+          && !used.has(s.poi.id)
+          && s.poi.perCapita < old.poi.perCapita)
+        .sort((a, b) => {
+          const savingA = old.poi.perCapita - a.poi.perCapita;
+          const savingB = old.poi.perCapita - b.poi.perCapita;
+          return downgradeOrder.indexOf(a.poi.category) - downgradeOrder.indexOf(b.poi.category)
+            || savingB - savingA
+            || b.score - a.score;
+        })[0];
+      if (!repl) continue;
+      const saving = old.poi.perCapita - repl.poi.perCapita;
+      if (!best || saving > best.saving || (saving === best.saving && repl.score > best.repl.score)) {
+        best = { idx, old, repl, saving };
+      }
+    }
+
+    if (best) {
+      stops[best.idx] = best.repl;
+      changed.push(best.repl.poi.id);
+      messages.push(`「${best.old.poi.name}」降档为「${best.repl.poi.name}」`);
+      continue;
+    }
+
     const drop = stops
       .map((s, idx) => ({ idx, stop: s }))
-      .filter(({ idx }) => canKeepDiversityAfterDrop(stops, idx))
+      .filter(({ idx }) => canDropForBudget(stops, idx, constraints))
       .sort((a, b) => b.stop.poi.perCapita - a.stop.poi.perCapita || a.stop.score - b.stop.score)[0];
     if (!drop) break;
     stops = stops.filter((_, idx) => idx !== drop.idx);
@@ -243,7 +300,11 @@ export function applyRefine(
   switch (action.kind) {
     case 'replaceCategory': {
       if (!action.category && action.criterion === 'cheaper' && cons.budgetPerCapita != null) {
-        const budgetPatch = tightenBudgetStops(stops, cons.budgetPerCapita, allScored);
+        const currentCost = stopTotalCost(stops);
+        const targetBudget = currentCost <= cons.budgetPerCapita
+          ? Math.max(0, currentCost - 1)
+          : cons.budgetPerCapita;
+        const budgetPatch = tightenBudgetStops(stops, targetBudget, allScored, cons);
         stops = budgetPatch.stops;
         changed.push(...budgetPatch.changed);
         if (budgetPatch.changed.length) {
@@ -287,6 +348,24 @@ export function applyRefine(
       }
 
       if (pool.length === 0) {
+        if (action.criterion === 'cheaper') {
+          const downgradeOrder = downgradeCategories(cat, cons);
+          const downgrade = allScored
+            .filter((s) =>
+              downgradeOrder.includes(s.poi.category)
+              && !currentIds.has(s.poi.id)
+              && s.poi.perCapita < old.poi.perCapita)
+            .sort((a, b) =>
+              downgradeOrder.indexOf(a.poi.category) - downgradeOrder.indexOf(b.poi.category)
+              || a.poi.perCapita - b.poi.perCapita
+              || b.score - a.score)[0];
+          if (downgrade) {
+            stops[targetIdx] = downgrade;
+            changed.push(downgrade.poi.id);
+            message = `已将${CATEGORY_LABEL[cat]}「${old.poi.name}」(${old.poi.rating}分/¥${old.poi.perCapita})降档为${CATEGORY_LABEL[downgrade.poi.category]}「${downgrade.poi.name}」(${downgrade.poi.rating}分/¥${downgrade.poi.perCapita}),人均会明显下降。`;
+            break;
+          }
+        }
         message = `没有找到比「${old.poi.name}」${action.criterion === 'cheaper' ? '更便宜' : action.criterion === 'closer' ? '更近' : '评分更高'}的${CATEGORY_LABEL[cat]},已保持原样。`;
         break;
       }
@@ -299,7 +378,7 @@ export function applyRefine(
 
     case 'setBudget': {
       cons.budgetPerCapita = action.budget!;
-      const budgetPatch = tightenBudgetStops(stops, action.budget!, allScored);
+      const budgetPatch = tightenBudgetStops(stops, action.budget!, allScored, cons);
       stops = budgetPatch.stops;
       changed.push(...budgetPatch.changed);
       if (budgetPatch.changed.length) {

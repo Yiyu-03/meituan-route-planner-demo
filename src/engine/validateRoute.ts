@@ -98,11 +98,12 @@ export function validateRoute(
   });
 
   // 7) POI 数量
+  const minStops = c.pace === 'relaxed' && c.durationMin <= 240 ? 2 : 3;
   checks.push({
     key: 'count',
     label: 'POI 数量',
-    status: route.stops.length >= 3 ? 'pass' : 'fail',
-    detail: `${route.stops.length} 个 POI${route.stops.length >= 3 ? '(满足 ≥3)' : '(不足 3 个)'}`,
+    status: route.stops.length >= minStops ? 'pass' : 'fail',
+    detail: `${route.stops.length} 个 POI${route.stops.length >= minStops ? `(满足 ≥${minStops})` : `(不足 ${minStops} 个)`}`,
   });
 
   // 额外:结束时间是否超过画像期望

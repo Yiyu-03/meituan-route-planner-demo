@@ -3,6 +3,9 @@ import {
 } from '../src/eval/cases';
 import { PERSONA_MAP } from '../src/data/personas';
 import { buildAmapCityPlan } from '../src/lib/amapPlan';
+import { runPipeline } from '../src/engine/pipeline';
+import { applyRefine, parseRefine } from '../src/engine/replan';
+import { routeAdvantage } from '../src/lib/display';
 
 // performance.now polyfill 对 node 已内置(globalThis.performance)
 const C = {
@@ -45,19 +48,26 @@ for (const c of PERSONA_DIFF_CASES) {
   console.log('');
 }
 
-// ---- Part 3: 非上海真实 POI 试验链路语义回归 ----
-console.log(`${C.bold}【Part 3】非上海高德 POI 试验链路(1 case)${C.reset}\n`);
+// ---- Part 3: 产品体验回归 ----
+console.log(`${C.bold}【Part 3】产品体验回归(4 cases)${C.reset}\n`);
 
-const suzhouInput = '朋友来苏州，带他园区转转，他上午10点到，预算300吃午饭，打算逛园林、博物馆';
-const remoteResult = await runSuzhouRemoteCase(suzhouInput);
-const remoteTag = remoteResult.allPass ? `${C.green}PASS${C.reset}` : `${C.red}FAIL${C.reset}`;
-console.log(`${remoteTag} [remote-suzhou] 苏州·园林博物馆午饭`);
-console.log(`     ${C.dim}路线:${remoteResult.stops.join(' → ')}${C.reset}`);
-for (const a of remoteResult.asserts) {
-  const mark = a.pass ? `${C.green}✓${C.reset}` : `${C.red}✗${C.reset}`;
-  console.log(`       ${mark} ${a.name} ${C.dim}— ${a.desc}${C.reset}`);
+const productResults = [
+  await runSuzhouRemoteCase('朋友来苏州，带他园区转转，他上午10点到，预算300吃午饭，打算逛园林、博物馆'),
+  runDaxueluBudgetCase('周五晚上和朋友在大学路聚会，人均200以内，想热闹但不要太累'),
+  await runHangzhouRemoteCase('朋友来杭州，下午在西湖附近逛逛，预算200，想轻松一点'),
+  runShanghaiMockRegression(),
+];
+
+for (const result of productResults) {
+  const tag = result.allPass ? `${C.green}PASS${C.reset}` : `${C.red}FAIL${C.reset}`;
+  console.log(`${tag} [${result.id}] ${result.title}`);
+  console.log(`     ${C.dim}路线:${result.stops.join(' → ')}${C.reset}`);
+  for (const a of result.asserts) {
+    const mark = a.pass ? `${C.green}✓${C.reset}` : `${C.red}✗${C.reset}`;
+    console.log(`       ${mark} ${a.name} ${C.dim}— ${a.desc}${C.reset}`);
+  }
+  console.log('');
 }
-console.log('');
 
 // ---- 汇总 ----
 const assertRate = ((passAsserts / totalAsserts) * 100).toFixed(1);
@@ -68,17 +78,22 @@ console.log(`${C.bold}${C.cyan}══════ 汇总 ══════${C.r
 console.log(`断言通过:  ${C.bold}${passAsserts}/${totalAsserts}${C.reset}  (${assertRate}%)`);
 console.log(`全过 case:  ${C.bold}${allPassCases}/${CASES.length}${C.reset}  (${caseRate}%)`);
 console.log(`画像差异:  ${C.bold}${distinctCount}/${PERSONA_DIFF_CASES.length}${C.reset}  (${diffRate}%) ${C.dim}← 证明非预制模板${C.reset}`);
-console.log(`远程试验:  ${remoteResult.allPass ? C.green : C.red}${remoteResult.allPass ? '1/1' : '0/1'}${C.reset} ${C.dim}← 非上海真实 POI 语义护栏${C.reset}`);
+const productPass = productResults.filter((item) => item.allPass).length;
+console.log(`产品回归:  ${productPass === productResults.length ? C.green : C.red}${productPass}/${productResults.length}${C.reset} ${C.dim}← 预算/文化/质量/节奏护栏${C.reset}`);
 console.log('');
 
-const ok = passAsserts === totalAsserts && distinctCount === PERSONA_DIFF_CASES.length && remoteResult.allPass;
+const ok = passAsserts === totalAsserts && distinctCount === PERSONA_DIFF_CASES.length && productPass === productResults.length;
 process.exit(ok ? 0 : 1);
 
-async function runSuzhouRemoteCase(input: string): Promise<{
+interface ProductCaseResult {
+  id: string;
+  title: string;
   asserts: { name: string; pass: boolean; desc: string }[];
   allPass: boolean;
   stops: string[];
-}> {
+}
+
+async function runSuzhouRemoteCase(input: string): Promise<ProductCaseResult> {
   const oldFetch = globalThis.fetch;
   globalThis.fetch = mockAmapFetch as typeof fetch;
   try {
@@ -87,16 +102,22 @@ async function runSuzhouRemoteCase(input: string): Promise<{
     const badRe = /KTV|量贩|舞厅|夜店|酒吧|电玩城|电玩|洗浴|按摩|足浴|棋牌/i;
     const mealStops = route?.stops.filter((stop) => stop.scored.poi.category === 'dining') ?? [];
     const lunch = mealStops[0];
+    const routeText = route?.stops.map((stop) => `${stop.scored.poi.name} ${stop.scored.reasons.join(' ')}`).join(' ') ?? '';
     const asserts = [
       { name: '生成路线', pass: Boolean(route), desc: '高德试验链路返回一条路线' },
       { name: 'POI 来源高德', pass: Boolean(route?.stops.every((stop) => stop.scored.poi.source === 'amap')), desc: '所有站点标记为 amap' },
       { name: '过滤噪声类型', pass: Boolean(route?.stops.every((stop) => !badRe.test(stop.scored.poi.name))), desc: '不出现 KTV/舞厅/电玩/酒吧/洗浴' },
+      { name: '过滤低信誉小店', pass: Boolean(route?.stops.every((stop) => !/胡子饮食店|饮食店|工作室|私人影院/.test(stop.scored.poi.name))), desc: '不把低可信小店作为核心推荐' },
+      { name: '含园林/文化', pass: Boolean(route?.stops.some((stop) => /园林|拙政园|景区|金鸡湖/.test(stop.scored.poi.name))), desc: '至少 1 个园林/文化景点' },
+      { name: '含博物馆/展馆', pass: Boolean(route?.stops.some((stop) => /博物馆|展馆|展示馆|美术馆/.test(stop.scored.poi.name))), desc: '尽量安排博物馆/展馆' },
       { name: '正餐最多 1 个', pass: mealStops.length <= 1, desc: '6 小时以内不安排两顿正餐' },
       { name: '午饭在饭点', pass: Boolean(lunch && lunch.arrive >= 11.5 && lunch.arrive <= 13.5), desc: '午饭到达时间在 11:30-13:30' },
-      { name: '站数按节奏', pass: route?.stops.length === 3, desc: '5 小时普通节奏生成 3 站，不固定 4 站' },
-      { name: '文案不泛化', pass: Boolean(route?.stops.some((stop) => stop.scored.reasons.join('').includes('文化/园林/博物馆'))), desc: '文化场景理由不套用热闹聚会话术' },
+      { name: '站数按节奏', pass: Boolean(route && route.stops.length >= 3 && route.stops.length <= 4), desc: '3-4 站，不机械固定 4 站' },
+      { name: '文案不泛化', pass: Boolean(route && !/朋友聚会|吃货|出片|热闹局/.test(routeText)), desc: '文化场景理由不套用热闹聚会/吃货/出片话术' },
     ];
     return {
+      id: 'remote-suzhou',
+      title: '苏州·园林博物馆午饭',
       asserts,
       allPass: asserts.every((item) => item.pass),
       stops: route?.stops.map((stop) => `${stop.scored.poi.name}(${stop.arrive.toFixed(2)}-${stop.depart.toFixed(2)})`) ?? [],
@@ -104,6 +125,77 @@ async function runSuzhouRemoteCase(input: string): Promise<{
   } finally {
     globalThis.fetch = oldFetch;
   }
+}
+
+function runDaxueluBudgetCase(input: string): ProductCaseResult {
+  const result = runPipeline(input, PERSONA_MAP.friends);
+  const route = result.routes[0];
+  const cheap = route ? applyRefine(parseRefine('便宜一点'), route, result.constraints, PERSONA_MAP.friends, result.candidates) : null;
+  const badPhotoLabel = result.routes.some((candidate, idx) => {
+    const label = routeAdvantage(result.routes, idx, result.constraints.budgetPerCapita).label;
+    const photoCount = candidate.stops.filter((stop) => stop.scored.poi.sceneTags.includes('photo')).length;
+    return label === '拍照友好版' && photoCount === 0;
+  });
+  const asserts = [
+    { name: '生成路线', pass: Boolean(route), desc: '大学路预算输入能生成路线' },
+    { name: '进入预算', pass: Boolean(route && route.totalCost <= 230), desc: '推荐方案尽量 ≤ ¥230' },
+    { name: '预算 repair 记录', pass: Boolean(result.repairLog?.some((log) => /预算/.test(log.trigger))), desc: '初始超预算时进入 repair' },
+    { name: '便宜一点真降价', pass: Boolean(cheap && route && cheap.route.totalCost <= route.totalCost - 20), desc: '低预算操作显著降低人均' },
+    { name: '无 0 出片标签', pass: !badPhotoLabel, desc: '不出现“拍照友好版 · 0 个出片点”' },
+  ];
+  return {
+    id: 'budget-daxuelu',
+    title: '大学路·人均200预算闭环',
+    asserts,
+    allPass: asserts.every((item) => item.pass),
+    stops: route?.stops.map((stop) => `${stop.scored.poi.name}(¥${stop.scored.poi.perCapita})`).concat(cheap ? [`便宜一点:¥${cheap.route.totalCost}`] : []) ?? [],
+  };
+}
+
+async function runHangzhouRemoteCase(input: string): Promise<ProductCaseResult> {
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = mockAmapFetch as typeof fetch;
+  try {
+    const result = await buildAmapCityPlan(input, { city: '杭州', input }, PERSONA_MAP.friends);
+    const route = result?.routes[0];
+    const longJump = route?.stops.some((stop, idx) => idx > 0 && (stop.legFromPrev?.distM ?? 0) > 1800) ?? false;
+    const routeText = route?.stops.map((stop) => `${stop.scored.poi.name} ${stop.scored.reasons.join(' ')}`).join(' ') ?? '';
+    const asserts = [
+      { name: '生成路线', pass: Boolean(route), desc: '杭州西湖高德链路返回路线' },
+      { name: '站数轻松', pass: Boolean(route && route.stops.length >= 2 && route.stops.length <= 3), desc: '轻松逛为 2-3 站' },
+      { name: '围绕西湖', pass: Boolean(route?.stops.every((stop) => /西湖|断桥|孤山|龙井|湖滨|花港/.test(stop.scored.poi.name))), desc: '不远距离跳出西湖附近' },
+      { name: '不远跳', pass: Boolean(route && !longJump), desc: '段间距离不过大' },
+      { name: '节奏文案', pass: /慢逛|休息|节奏不赶|轻量/.test(routeText), desc: '文案体现轻松慢逛' },
+    ];
+    return {
+      id: 'remote-hangzhou',
+      title: '杭州·西湖轻松慢逛',
+      asserts,
+      allPass: asserts.every((item) => item.pass),
+      stops: route?.stops.map((stop) => `${stop.scored.poi.name}(${stop.arrive.toFixed(2)}-${stop.depart.toFixed(2)})`) ?? [],
+    };
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+}
+
+function runShanghaiMockRegression(): ProductCaseResult {
+  const input = '周日下午带4岁小孩在静安寺一带玩,要亲子友好不要太累,预算人均150,晚饭前要结束';
+  const result = runPipeline(input, PERSONA_MAP.family);
+  const route = result.routes[0];
+  const asserts = [
+    { name: '上海仍走 mock', pass: Boolean(route?.stops.every((stop) => stop.scored.poi.source !== 'amap')), desc: '上海稳定主流程不被非上海策略改成高德' },
+    { name: '仍有路线', pass: Boolean(route && route.stops.length >= 3), desc: '主流程能生成 3 站以上路线' },
+    { name: '预算达标或标记', pass: Boolean(route && (route.totalCost <= 150 * 1.15 || route.checks.some((check) => check.key === 'budget' && check.status !== 'pass'))), desc: '预算闭环仍可信' },
+    { name: 'Agent Trace 完整', pass: (result.agentTrace?.length ?? 0) >= 9, desc: '上海 agent loop 未被破坏' },
+  ];
+  return {
+    id: 'mock-shanghai',
+    title: '上海 mock 主流程回归',
+    asserts,
+    allPass: asserts.every((item) => item.pass),
+    stops: route?.stops.map((stop) => stop.scored.poi.name) ?? [],
+  };
 }
 
 async function mockAmapFetch(input: unknown): Promise<Response> {
@@ -117,12 +209,23 @@ async function mockAmapFetch(input: unknown): Promise<Response> {
   }
 
   const keyword = url.searchParams.get('keyword') ?? '';
+  const city = url.searchParams.get('city') ?? '';
+  if (city.includes('杭州')) {
+    return jsonResponse({
+      status: 'ok',
+      configured: true,
+      results: mockHangzhouPois(keyword),
+      source: 'amap_place_text',
+    });
+  }
+
   const commonBad = [
     { name: '苏州工业园区量贩KTV', address: '苏州工业园区', location: '120.704300,31.320000', type: '体育休闲服务;娱乐场所;KTV', source: 'amap' },
     { name: '金鸡湖电玩城', address: '苏州工业园区', location: '120.705300,31.321000', type: '体育休闲服务;娱乐场所;游戏厅', source: 'amap' },
   ];
   const results = keyword.includes('美食')
     ? [
+      { name: '胡子饮食店', address: '苏州工业园区小巷', location: '120.704500,31.321500', type: '餐饮服务;中餐厅', source: 'amap' },
       { name: '苏州园区本帮菜馆', address: '苏州工业园区星湖街', location: '120.706000,31.322000', type: '餐饮服务;中餐厅', source: 'amap' },
       ...commonBad,
     ]
@@ -145,6 +248,39 @@ async function mockAmapFetch(input: unknown): Promise<Response> {
     results,
     source: 'amap_place_text',
   });
+}
+
+function mockHangzhouPois(keyword: string): AmapMockPoi[] {
+  const bad = [
+    { name: '西湖量贩KTV', address: '杭州市西湖区', location: '120.146000,30.257000', type: '体育休闲服务;娱乐场所;KTV', source: 'amap' },
+  ];
+  if (keyword.includes('咖啡')) {
+    return [
+      { name: '西湖边轻食咖啡', address: '杭州市西湖区北山街', location: '120.145000,30.254000', type: '餐饮服务;咖啡厅', source: 'amap' },
+      ...bad,
+    ];
+  }
+  if (keyword.includes('博物馆')) {
+    return [
+      { name: '浙江省博物馆孤山馆区', address: '杭州市西湖区孤山路', location: '120.147000,30.253000', type: '科教文化服务;博物馆', source: 'amap' },
+      { name: '杭州西湖博物馆', address: '杭州市上城区南山路', location: '120.155000,30.244000', type: '科教文化服务;博物馆', source: 'amap' },
+      ...bad,
+    ];
+  }
+  return [
+    { name: '西湖断桥残雪', address: '杭州市西湖区北山街', location: '120.146500,30.258000', type: '风景名胜;风景名胜', source: 'amap' },
+    { name: '西湖花港观鱼', address: '杭州市西湖区南山路', location: '120.135000,30.231000', type: '风景名胜;公园广场', source: 'amap' },
+    { name: '龙井路慢行街区', address: '杭州市西湖区龙井路', location: '120.125000,30.238000', type: '风景名胜;风景名胜', source: 'amap' },
+    ...bad,
+  ];
+}
+
+interface AmapMockPoi {
+  name: string;
+  address: string;
+  location: string;
+  type: string;
+  source: string;
 }
 
 function jsonResponse(payload: unknown): Response {

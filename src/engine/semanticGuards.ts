@@ -6,6 +6,7 @@ const ADULT_NIGHT_RE = /酒吧|清吧|酒廊|小酒馆|精酿|威士忌|LiveHous
 const ADULT_NIGHT_INTENT_RE = /酒吧|清吧|酒廊|小酒馆|精酿|威士忌|LiveHouse|livehouse|夜店|蹦迪|小酌|喝一杯|夜生活/;
 const NIGHT_VIEW_INTENT_RE = /夜景|江景|看景|登高|夜游|灯会|灯光|天际线/;
 const QUIET_INTENT_RE = /安静|清净|不吵|别太吵|不要太吵|接电话|打电话|开会|聊天/;
+const CULTURE_LEISURE_INTENT_RE = /园林|博物馆|博物院|美术馆|展|展馆|citywalk|逛|安静|轻松|慢慢|西湖|文化|历史/;
 
 export function hasExplicitFamilyIntent(c: Constraints): boolean {
   return c.prefs.includes('family') || FAMILY_INTENT_RE.test(c.raw);
@@ -21,6 +22,10 @@ export function wantsNightView(c: Constraints): boolean {
 
 export function isQuietIntent(c: Constraints): boolean {
   return c.prefs.includes('quiet') || QUIET_INTENT_RE.test(c.raw);
+}
+
+export function hasCultureLeisureIntent(c: Constraints): boolean {
+  return c.prefs.includes('cultural') || c.prefs.includes('quiet') || CULTURE_LEISURE_INTENT_RE.test(c.raw);
 }
 
 export function isAdultNightlifePOI(p: POI): boolean {
@@ -39,5 +44,6 @@ export function isSemanticMismatch(p: POI, c: Constraints): boolean {
   if (explicitFamily && isAdultNightlifePOI(p) && !adultNightWanted) return true;
   if (!explicitFamily && isStrongFamilyPOI(p)) return true;
   if (isQuietIntent(c) && isAdultNightlifePOI(p) && !adultNightWanted) return true;
+  if (hasCultureLeisureIntent(c) && p.category === 'entertainment' && !c.mustCategories.includes('entertainment')) return true;
   return false;
 }

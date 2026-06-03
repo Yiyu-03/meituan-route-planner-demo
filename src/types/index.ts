@@ -109,6 +109,8 @@ export interface IntentDraft {
   durationMin: number;
   party: number;
   budgetPerCapita: number | null;
+  diningBudgetPerCapita: number | null;
+  budgetSource: 'explicit_total' | 'explicit_dining' | 'soft' | null;
   prefs: SceneTag[];
   avoid: SceneTag[];
   mustCategories: Category[];
@@ -126,6 +128,8 @@ export interface Constraints {
   durationMin: number;      // 计划总时长(分钟)
   party: number;            // 同行人数
   budgetPerCapita: number | null; // 人均预算 ¥(null = 未指定)
+  diningBudgetPerCapita?: number | null; // 仅正餐预算,如「预算300吃午饭」
+  budgetSource?: 'explicit_total' | 'explicit_dining' | 'soft' | null;
   prefs: SceneTag[];        // 正向偏好
   avoid: SceneTag[];        // 规避
   mustCategories: Category[];

@@ -30,10 +30,14 @@ export function explainRoute(
   if (c.budgetPerCapita != null) {
     const verdict = budgetVerdict(route.totalCost, c.budgetPerCapita);
     if (verdict.tone === 'ok') {
-      parts.push(`人均¥${route.totalCost}(预算内)`);
+      parts.push(`人均¥${route.totalCost}(${c.budgetSource === 'soft' ? '软预算内' : '预算内'})`);
     } else {
-      parts.push(`人均¥${route.totalCost}(${verdict.label})`);
+      parts.push(`人均¥${route.totalCost}(${c.budgetSource === 'soft' ? `软预算${verdict.label}` : verdict.label})`);
     }
+  } else if (c.diningBudgetPerCapita != null) {
+    const meals = stops.filter((s) => s.scored.poi.category === 'dining');
+    const mealCost = meals.reduce((sum, stop) => sum + stop.scored.poi.perCapita, 0);
+    parts.push(`正餐¥${mealCost || 0}/¥${c.diningBudgetPerCapita}`);
   } else {
     parts.push(`人均¥${route.totalCost}`);
   }
@@ -45,6 +49,9 @@ export function explainRoute(
 
   // ---- 风险提示 ----
   const risks: string[] = [];
+  if (c.budgetSource === 'soft' && /外滩|陆家嘴|新天地|bund|lujiazui|xintiandi/.test(`${c.city}${c.raw}`)) {
+    risks.push('· 热门夜景商圈人均偏高,已优先选择相对平价的组合。');
+  }
 
   // 来自校验的 warn/fail
   for (const ck of route.checks) {

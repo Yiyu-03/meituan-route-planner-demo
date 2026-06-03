@@ -36,7 +36,11 @@ function partyLabel(party: number): string {
 
 export function formatConstraintSummary(c: Constraints): string {
   const bits = [timeOfDayLabel(c.startTime), formatAreas(c), partyLabel(c.party)];
-  if (c.budgetPerCapita != null) bits.push(`人均≤¥${c.budgetPerCapita}`);
+  if (c.budgetPerCapita != null) {
+    bits.push(c.budgetSource === 'soft' ? `软预算≤¥${c.budgetPerCapita}` : `人均≤¥${c.budgetPerCapita}`);
+  } else if (c.diningBudgetPerCapita != null) {
+    bits.push(`正餐≤¥${c.diningBudgetPerCapita}`);
+  }
   if (c.prefs.length) bits.push(`想要${formatTags(c.prefs).slice(0, 3).join('、')}`);
   if (c.avoid.length) bits.push(`避开${formatTags(c.avoid).join('、')}`);
   return bits.join(' · ');

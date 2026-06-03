@@ -295,7 +295,11 @@ function understoodChips(plan: PlanResult, persona: Persona) {
     ...area,
     `${fmtH(c.startTime)} 出发`,
     `${c.party}人`,
-    c.budgetPerCapita ? `人均≤¥${c.budgetPerCapita}` : '预算不限',
+    c.budgetPerCapita
+      ? `${c.budgetSource === 'soft' ? '软预算' : '人均'}≤¥${c.budgetPerCapita}`
+      : c.diningBudgetPerCapita
+        ? `正餐≤¥${c.diningBudgetPerCapita}`
+        : '预算不限',
     persona.label,
     ...formatTags(c.prefs).slice(0, 3),
   ];
@@ -1057,9 +1061,9 @@ function StopCard({
               <span className={queue.tone === 'green' ? 'text-emerald-700' : 'text-amber-700'}>{queue.label}</span>
             </div>
           </div>
-          <div className="tnum rounded-lg bg-[#F7C948] px-3 py-2 text-center text-[18px] font-bold text-[#201B16]">
-            {Math.round(stop.scored.score)}
-            <span className="block text-[10px] font-medium">匹配</span>
+          <div className="rounded-lg bg-[#F7C948] px-3 py-2 text-center text-[#201B16]">
+            <SlidersHorizontal className="mx-auto" size={17} strokeWidth={1.8} />
+            <span className="mt-1 block text-[10px] font-semibold">推荐依据</span>
           </div>
         </div>
 
@@ -1100,6 +1104,10 @@ function compareSentence(stop: RouteStop, constraints: Constraints) {
   const raw = constraints.raw;
   const askedPhone = /接电话|打电话|办公|开会/.test(raw);
   const askedQuiet = constraints.prefs.includes('quiet') || /安静|清净|不吵|别太吵|不要太吵/.test(raw);
+  const cultureLeisure = /园林|博物馆|博物院|展馆|展览|citywalk|逛|西湖|文化|历史|轻松|慢慢/.test(raw)
+    || constraints.prefs.includes('cultural');
+  if (cultureLeisure && stop.scored.poi.category === 'culture') return '适合作为主景点慢慢逛，停留节奏更稳';
+  if (cultureLeisure && tags.includes('quiet')) return '更适合中途放慢脚步，避免路线太赶';
   if (tags.includes('quiet') && askedPhone) return '比同区域热闹店更安静，适合短暂停下来接电话';
   if (tags.includes('quiet') && askedQuiet) return '比同区域热闹店更安静，适合慢慢聊';
   if (tags.includes('photo')) return '比附近普通打卡点更容易出片';

@@ -21,6 +21,65 @@ function replacementPool(route: Route, allScored: ScoredPOI[], cat: string) {
   return allScored.filter((s) => s.poi.category === cat && !used.has(s.poi.id));
 }
 
+function routeCost(picks: ScoredPOI[]): number {
+  return Math.round(picks.reduce((sum, pick) => sum + pick.poi.perCapita, 0));
+}
+
+function mealRequested(c: Constraints): boolean {
+  return /吃饭|午饭|午餐|晚饭|晚餐|正餐|美食/.test(c.raw) || c.mustCategories.includes('dining');
+}
+
+function downgradeCategories(cat: string, c: Constraints): string[] {
+  if (cat === 'dining') return mealRequested(c) ? [] : ['cafe'];
+  if (cat === 'nightscape') return ['entertainment', 'cafe', 'culture', 'shopping'];
+  if (cat === 'entertainment') return ['cafe', 'culture', 'shopping'];
+  if (cat === 'shopping') return ['dining', 'cafe', 'culture'];
+  if (cat === 'cafe') return ['culture'];
+  return [];
+}
+
+function canDropStop(picks: ScoredPOI[], idx: number, c: Constraints): boolean {
+  const stop = picks[idx];
+  const minStops = c.pace === 'relaxed' && c.durationMin <= 180 ? 2 : 3;
+  if (picks.length <= minStops) return false;
+  if (stop.poi.category === 'dining' && mealRequested(c)) return false;
+  const remaining = picks.filter((_, i) => i !== idx);
+  for (const cat of c.mustCategories) {
+    if (!remaining.some((pick) => pick.poi.category === cat)) return false;
+  }
+  return true;
+}
+
+function cheapestRouteCost(picks: ScoredPOI[], allScored: ScoredPOI[], c: Constraints): number {
+  let estimate = routeCost(picks);
+  for (const pick of picks) {
+    const sameCat = allScored
+      .filter((item) => item.poi.category === pick.poi.category && item.poi.id !== pick.poi.id)
+      .sort((a, b) => a.poi.perCapita - b.poi.perCapita)[0];
+    if (sameCat && sameCat.poi.perCapita < pick.poi.perCapita) {
+      estimate -= pick.poi.perCapita - sameCat.poi.perCapita;
+    }
+  }
+  let reduced = [...picks];
+  while (reduced.some((_, idx) => canDropStop(reduced, idx, c))) {
+    const drop = reduced
+      .map((pick, idx) => ({ pick, idx }))
+      .filter(({ idx }) => canDropStop(reduced, idx, c))
+      .sort((a, b) => b.pick.poi.perCapita - a.pick.poi.perCapita)[0];
+    if (!drop) break;
+    reduced = reduced.filter((_, idx) => idx !== drop.idx);
+  }
+  estimate = Math.min(estimate, routeCost(reduced));
+  return Math.round(estimate);
+}
+
+function openAtReplacementSlot(route: Route, idx: number, candidate: ScoredPOI): boolean {
+  const arrive = route.stops[idx]?.arrive;
+  if (arrive == null) return true;
+  return arrive >= candidate.poi.openHour - 0.01
+    && arrive + candidate.poi.avgDuration / 60 <= candidate.poi.closeHour + 0.01;
+}
+
 export function repairIfNeeded(
   route: Route,
   constraints: Constraints,
@@ -35,7 +94,10 @@ export function repairIfNeeded(
   );
 
   for (let round = 1; round <= maxRounds; round++) {
-    const issue = current.checks.find((c) => c.status === 'fail');
+    const budgetIssue = constraints.budgetPerCapita != null && current.totalCost > constraints.budgetPerCapita
+      ? current.checks.find((c) => c.key === 'budget')
+      : undefined;
+    const issue = budgetIssue ?? current.checks.find((c) => c.status === 'fail');
     if (!issue) break;
 
     const before = routeNames(current);
@@ -43,18 +105,71 @@ export function repairIfNeeded(
     let action = '';
 
     if (issue.key === 'budget') {
-      const victimIdx = picks.reduce((maxIdx, p, i, arr) =>
-        p.poi.perCapita > arr[maxIdx].poi.perCapita ? i : maxIdx, 0);
-      const old = picks[victimIdx];
-      const repl = replacementPool(current, allScored, old.poi.category)
-        .filter((s) => s.poi.perCapita < old.poi.perCapita)
-        .sort((a, b) => a.poi.perCapita - b.poi.perCapita || b.score - a.score)[0];
-      if (!repl) {
-        logs.push({ round, trigger: issue.label, action: '未找到更低价同类候选', before, after: before, resolved: false });
+      const sortedByPrice = picks
+        .map((pick, idx) => ({ pick, idx }))
+        .sort((a, b) => b.pick.poi.perCapita - a.pick.poi.perCapita);
+      let patch:
+        | { idx: number; old: ScoredPOI; repl?: ScoredPOI; mode: 'same' | 'downgrade' | 'drop' }
+        | null = null;
+
+      for (const { pick, idx } of sortedByPrice) {
+        const repl = replacementPool(current, allScored, pick.poi.category)
+          .filter((s) => s.poi.perCapita < pick.poi.perCapita && openAtReplacementSlot(current, idx, s))
+          .sort((a, b) => a.poi.perCapita - b.poi.perCapita || b.score - a.score)[0];
+        if (repl) {
+          patch = { idx, old: pick, repl, mode: 'same' };
+          break;
+        }
+      }
+
+      if (!patch) {
+        for (const { pick, idx } of sortedByPrice) {
+          const used = new Set(picks.map((item) => item.poi.id));
+          const downgradeOrder = downgradeCategories(pick.poi.category, constraints);
+          const repl = allScored
+            .filter((s) =>
+              downgradeOrder.includes(s.poi.category)
+              && !used.has(s.poi.id)
+              && s.poi.perCapita < pick.poi.perCapita
+              && openAtReplacementSlot(current, idx, s))
+            .sort((a, b) =>
+              downgradeOrder.indexOf(a.poi.category) - downgradeOrder.indexOf(b.poi.category)
+              || a.poi.perCapita - b.poi.perCapita
+              || b.score - a.score)[0];
+          if (repl) {
+            patch = { idx, old: pick, repl, mode: 'downgrade' };
+            break;
+          }
+        }
+      }
+
+      if (!patch) {
+        const drop = sortedByPrice.find(({ idx }) => canDropStop(picks, idx, constraints));
+        if (drop) patch = { idx: drop.idx, old: drop.pick, mode: 'drop' };
+      }
+
+      if (!patch) {
+        const floor = cheapestRouteCost(picks, allScored, constraints);
+        logs.push({
+          round,
+          trigger: issue.label,
+          action: `该区域内最低约 ¥${floor},建议提高预算或减少站点`,
+          before,
+          after: before,
+          resolved: false,
+        });
         break;
       }
-      picks[victimIdx] = repl;
-      action = `预算超限,将${CATEGORY_LABEL[old.poi.category]}「${old.poi.name}」换成更低价「${repl.poi.name}」`;
+
+      if (patch.mode === 'drop') {
+        picks = picks.filter((_, idx) => idx !== patch!.idx);
+        action = `预算超限,移除非必要站「${patch.old.poi.name}」`;
+      } else if (patch.repl) {
+        picks[patch.idx] = patch.repl;
+        action = patch.mode === 'same'
+          ? `预算超限,将${CATEGORY_LABEL[patch.old.poi.category]}「${patch.old.poi.name}」换成更低价「${patch.repl.poi.name}」`
+          : `预算超限,将${CATEGORY_LABEL[patch.old.poi.category]}「${patch.old.poi.name}」降档为${CATEGORY_LABEL[patch.repl.poi.category]}「${patch.repl.poi.name}」`;
+      }
     } else if (issue.key === 'open') {
       const victim = current.stops.find((s) => issue.detail.includes(s.scored.poi.name));
       if (!victim) break;
