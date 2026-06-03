@@ -6,7 +6,7 @@ import { buildAmapCityPlan } from '../src/lib/amapPlan';
 import { runPipeline } from '../src/engine/pipeline';
 import { applyRefine, parseRefine } from '../src/engine/replan';
 import { runRefineAgent } from '../src/engine/refineAgent';
-import { routeAdvantage } from '../src/lib/display';
+import { routeAdvantage, routeVerdict } from '../src/lib/display';
 import type { PlanResult, RefinePrimaryIntent, Route } from '../src/types';
 
 // performance.now polyfill 对 node 已内置(globalThis.performance)
@@ -51,9 +51,10 @@ for (const c of PERSONA_DIFF_CASES) {
 }
 
 // ---- Part 3: 产品体验回归 ----
-console.log(`${C.bold}【Part 3】产品体验回归(4 cases)${C.reset}\n`);
+console.log(`${C.bold}【Part 3】产品体验回归(5 cases)${C.reset}\n`);
 
 const productResults = [
+  runRouteVerdictHardGateCase(),
   await runSuzhouRemoteCase('朋友来苏州，带他园区转转，他上午10点到，预算300吃午饭，打算逛园林、博物馆'),
   runDaxueluBudgetCase('周五晚上和朋友在大学路聚会，人均200以内，想热闹但不要太累'),
   await runHangzhouRemoteCase('朋友来杭州，下午在西湖附近逛逛，预算200，想轻松一点'),
@@ -107,10 +108,42 @@ function routeHasHardMove(route: Route): boolean {
   }) || routeMoveMin(route) >= 100;
 }
 
-function routeStamp(route: Route): '拿来就走' | '建议调整' | '需调整' {
-  if (route.checks.some((check) => check.status === 'fail')) return '需调整';
-  if (route.checks.some((check) => check.status === 'warn')) return '建议调整';
-  return '拿来就走';
+function runRouteVerdictHardGateCase(): ProductCaseResult {
+  const plan = runPipeline('朋友来上海，上午10点出门，想轻松逛逛', PERSONA_MAP.friends);
+  const base = plan.routes[0];
+  const stops = base.stops.map((stop, idx) => {
+    if (idx !== 1 || !stop.legFromPrev) return stop;
+    return {
+      ...stop,
+      legFromPrev: {
+        ...stop.legFromPrev,
+        minutes: 623,
+        distM: 64600,
+        mode: 'transit' as const,
+      },
+    };
+  });
+  const badRoute: Route = {
+    ...base,
+    stops,
+    totalWalkMin: 0,
+    totalTransitMin: 623,
+    endTime: 24.05,
+    checks: [],
+  };
+  const verdict = routeVerdict(badRoute, plan.constraints);
+  const asserts = [
+    { name: '硬闸门 blocked', pass: verdict.status === 'blocked', desc: '即使 checks 为空,623min/64.6km 也必须被 routeVerdict 否决' },
+    { name: '不盖拿来就走', pass: verdict.stamp === '需调整', desc: '硬失败路线印章必须是需调整' },
+    { name: '记录硬失败原因', pass: verdict.hardFailures.some((item) => /623|64\\.6|总移动|明显超出|10 小时/.test(item)), desc: 'verdict 给出移动/排程失败原因' },
+  ];
+  return {
+    id: 'route-verdict-hard-gate',
+    title: 'routeVerdict·硬约束否决权',
+    asserts,
+    allPass: asserts.every((item) => item.pass),
+    stops: badRoute.stops.map((stop) => stop.scored.poi.name),
+  };
 }
 
 async function runAgentRefines(
@@ -153,7 +186,7 @@ async function runAgentRefines(
       actual: result.intent.primaryIntent,
       message: result.message,
       validation: result.summary.validationStatus,
-      stamp: routeStamp(result.route),
+      stamp: routeVerdict(result.route, result.constraints).stamp,
       elapsedMs: result.elapsedMs,
       route: result.route,
     });

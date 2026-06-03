@@ -80,9 +80,11 @@ export function validateRoute(
   checks.push({
     key: 'mobility',
     label: '移动距离',
-    status: mobilityProblems.length ? 'fail' : totalMove > Math.min(90, durMin * 0.35) ? 'warn' : 'pass',
+    status: mobilityProblems.length || totalMove >= 100 ? 'fail' : totalMove > Math.min(90, durMin * 0.35) ? 'warn' : 'pass',
     detail: mobilityProblems.length
       ? `移动过长:${mobilityProblems.join(';')}`
+      : totalMove >= 100
+        ? `总移动约 ${totalMove} 分钟,明显不适合作为本地路线`
       : `单段移动可控,总移动约 ${totalMove} 分钟`,
   });
   checks.push({

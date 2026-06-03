@@ -46,6 +46,8 @@ import {
   lifeTips,
   openingNote,
   routeAdvantage,
+  routeBudgetVerdict,
+  routeVerdict,
   travelSummary,
 } from '../lib/display';
 import { buildReplanChips, type ReplanChip } from '../lib/replanChips';
@@ -312,24 +314,7 @@ function budgetMeta(route: Route, constraints: Constraints): {
   tone: 'neutral' | 'green' | 'amber' | 'red';
   helper: string;
 } {
-  const budget = constraints.budgetPerCapita;
-  if (budget == null && constraints.diningBudgetPerCapita != null) {
-    const meal = route.stops.find((stop) => stop.scored.poi.category === 'dining');
-    if (!meal) {
-      return {
-        value: `午饭预算 ≤¥${constraints.diningBudgetPerCapita}`,
-        tone: 'neutral',
-        helper: '未安排正餐，不计入全程预算',
-      };
-    }
-    const over = meal.scored.poi.perCapita > constraints.diningBudgetPerCapita;
-    return {
-      value: `午饭估算 ¥${meal.scored.poi.perCapita} / ¥${constraints.diningBudgetPerCapita}`,
-      tone: over ? 'amber' : 'green',
-      helper: over ? '正餐略超预算' : '午饭预算内',
-    };
-  }
-  const verdict = budgetVerdict(route.totalCost, budget);
+  const verdict = routeBudgetVerdict(route, constraints);
   const tone = verdict.tone === 'ok' ? 'green' : verdict.tone === 'warn' ? 'amber' : 'red';
   return { value: verdict.display, tone, helper: verdict.label };
 }
@@ -352,12 +337,9 @@ function safeRoute(session: PlannerSession): Route {
   return session.plan.routes[session.activeRouteIdx] ?? session.plan.routes[0];
 }
 
-function routeRisk(route: Route): { label: string; tone: 'green' | 'amber' | 'red' } {
-  const fail = route.checks.some((c) => c.status === 'fail');
-  const warn = route.checks.some((c) => c.status === 'warn');
-  if (fail) return { label: '需调整', tone: 'red' };
-  if (warn) return { label: '有提醒', tone: 'amber' };
-  return { label: '行程宽松', tone: 'green' };
+function routeRisk(route: Route, constraints: Constraints): { label: string; tone: 'green' | 'amber' | 'red'; stamp: '拿来就走' | '建议调整' | '需调整' } {
+  const verdict = routeVerdict(route, constraints);
+  return { label: verdict.label, tone: verdict.tone, stamp: verdict.stamp };
 }
 
 function riskClass(tone: 'green' | 'amber' | 'red') {
@@ -423,7 +405,7 @@ export function MainDashboard() {
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
   const activeRoute = safeRoute(activeSession);
   const activePersona = PERSONA_MAP[activeSession.plan.personaId] ?? PERSONA_MAP.solo;
-  const risk = routeRisk(activeRoute);
+  const risk = routeRisk(activeRoute, activeSession.plan.constraints);
   const budget = budgetMeta(activeRoute, activeSession.plan.constraints);
   const understood = understoodChips(activeSession.plan, activePersona);
   const quickActions = useMemo(
@@ -705,7 +687,7 @@ export function MainDashboard() {
 
                 <RouteAlternatives
                   routes={activeSession.plan.routes}
-                  budget={activeSession.plan.constraints.budgetPerCapita}
+                  constraints={activeSession.plan.constraints}
                   activeRouteIdx={activeSession.activeRouteIdx}
                   onPick={applyRoutePick}
                 />
@@ -940,17 +922,15 @@ function RouteCover({
 }: {
   route: Route;
   persona: Persona;
-  risk: { label: string; tone: 'green' | 'amber' | 'red' };
+  risk: { label: string; tone: 'green' | 'amber' | 'red'; stamp: '拿来就走' | '建议调整' | '需调整' };
   budget: { value: string; tone: 'neutral' | 'green' | 'amber' | 'red'; helper: string };
 }) {
   const movement = travelSummary(route);
-  const budgetOver = budget.tone === 'amber' || budget.tone === 'red';
-  const needsAdjustment = risk.tone === 'red' || risk.tone === 'amber' || budgetOver;
-  const stampText = risk.tone === 'red' ? '需调整' : needsAdjustment ? '建议调整' : '拿来就走';
+  const needsAdjustment = risk.stamp !== '拿来就走';
   return (
     <section className="relative overflow-hidden rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] p-4 shadow-[0_10px_24px_rgba(68,50,31,.08)]">
       <div className={`travel-route-stamp ${needsAdjustment ? 'travel-route-stamp-warning' : ''}`}>
-        {stampText}
+        {risk.stamp}
       </div>
       <div className="max-w-3xl">
         <p className="mb-2 flex items-center gap-2 text-[12px] font-semibold tracking-[0.2em] text-[#8A765F]">
@@ -1152,10 +1132,10 @@ function MockAction({ icon: Icon, label }: { icon: LucideIcon; label: string }) 
 }
 
 function RouteAlternatives({
-  routes, budget, activeRouteIdx, onPick,
+  routes, constraints, activeRouteIdx, onPick,
 }: {
   routes: Route[];
-  budget: number | null;
+  constraints: Constraints;
   activeRouteIdx: number;
   onPick: (idx: number) => void;
 }) {
@@ -1167,8 +1147,8 @@ function RouteAlternatives({
       <div className="grid gap-2 md:grid-cols-2">
         {routes.slice(0, 4).map((route, idx) => {
           const active = idx === activeRouteIdx;
-          const advantage = routeAdvantage(routes, idx, budget);
-          const budgetInfo = budgetVerdict(route.totalCost, budget);
+          const advantage = routeAdvantage(routes, idx, constraints.budgetPerCapita);
+          const budgetInfo = routeBudgetVerdict(route, constraints);
           const budgetCls = budgetInfo.tone === 'ok'
             ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
             : budgetInfo.tone === 'warn'

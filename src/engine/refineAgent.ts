@@ -15,6 +15,7 @@ import { distBetween } from './geo';
 import { materializeRoute } from './buildRouteCandidates';
 import { revalidateRoute } from './pipeline';
 import { repairIfNeeded } from './agent/repairRoute';
+import { routeVerdict } from '../lib/display';
 
 interface IntentRule {
   intent: RefinePrimaryIntent;
@@ -224,9 +225,10 @@ export async function resolveRefineIntent(input: RefineAgentInput): Promise<Refi
   return { ...local, source: input.useLLM === false ? 'local' : 'fallback' };
 }
 
-function routeValidationStatus(route: Route): 'pass' | 'warn' | 'fail' {
-  if (route.checks.some((check) => check.status === 'fail')) return 'fail';
-  if (route.checks.some((check) => check.status === 'warn')) return 'warn';
+function routeValidationStatus(route: Route, constraints: Constraints): 'pass' | 'warn' | 'fail' {
+  const verdict = routeVerdict(route, constraints);
+  if (verdict.status === 'blocked') return 'fail';
+  if (verdict.status === 'adjust') return 'warn';
   return 'pass';
 }
 
@@ -579,7 +581,7 @@ export async function runRefineAgent(input: RefineAgentInput): Promise<RefineAge
 
   const guarded = ensureSafeRoute(route, constraints, input.persona, input.candidates);
   route = guarded.route;
-  const status = routeValidationStatus(route);
+  const status = routeValidationStatus(route, constraints);
   const elapsedMs = +(performance.now() - start).toFixed(2);
   const fallbackUsed = guarded.fallbackUsed || elapsedMs > MAX_AGENT_MS;
   const message = prefixMessage(intent, body);

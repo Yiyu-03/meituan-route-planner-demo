@@ -80,6 +80,137 @@ export function budgetVerdict(totalCost: number, budget: number | null): BudgetV
   };
 }
 
+export interface RouteBudgetVerdict extends BudgetVerdict {
+  scope: 'total' | 'dining' | 'none';
+  budget: number | null;
+  mealCost?: number | null;
+}
+
+export function routeBudgetVerdict(route: Route, c: Constraints): RouteBudgetVerdict {
+  if (c.budgetPerCapita != null) {
+    return { ...budgetVerdict(route.totalCost, c.budgetPerCapita), scope: 'total', budget: c.budgetPerCapita };
+  }
+  if (c.diningBudgetPerCapita != null) {
+    const meal = route.stops.find((stop) => stop.scored.poi.category === 'dining');
+    if (!meal) {
+      return {
+        tone: 'warn',
+        display: `午饭预算 ≤¥${c.diningBudgetPerCapita}`,
+        label: '未安排正餐',
+        overByPct: 0,
+        scope: 'dining',
+        budget: c.diningBudgetPerCapita,
+        mealCost: null,
+      };
+    }
+    const mealCost = meal.scored.poi.perCapita;
+    const ratio = mealCost / c.diningBudgetPerCapita;
+    if (ratio <= 1) {
+      return {
+        tone: 'ok',
+        display: `午饭 ¥${mealCost} / ¥${c.diningBudgetPerCapita} ✓`,
+        label: '午饭预算内',
+        overByPct: 0,
+        scope: 'dining',
+        budget: c.diningBudgetPerCapita,
+        mealCost,
+      };
+    }
+    const overByPct = Math.round((ratio - 1) * 100);
+    return {
+      tone: ratio <= 1.15 ? 'warn' : 'over',
+      display: `午饭 ¥${mealCost} / ¥${c.diningBudgetPerCapita} · 超 ${overByPct}%`,
+      label: ratio <= 1.15 ? `午饭略超 ${overByPct}%` : `午饭超 ${overByPct}%`,
+      overByPct,
+      scope: 'dining',
+      budget: c.diningBudgetPerCapita,
+      mealCost,
+    };
+  }
+  return { ...budgetVerdict(route.totalCost, null), scope: 'none', budget: null };
+}
+
+export type RouteVerdictStatus = 'ready' | 'adjust' | 'blocked';
+
+export interface RouteVerdict {
+  status: RouteVerdictStatus;
+  stamp: '拿来就走' | '建议调整' | '需调整';
+  label: string;
+  tone: 'green' | 'amber' | 'red';
+  hardFailures: string[];
+  warnings: string[];
+}
+
+const HARD_MAX_LEG_MINUTES = 45;
+const HARD_MAX_LEG_DISTANCE_M = 12000;
+const HARD_MAX_WALK_MINUTES = 25;
+const HARD_MAX_TOTAL_MOVE_MINUTES = 100;
+
+export function routeVerdict(route: Route, c?: Constraints): RouteVerdict {
+  const hardFailures: string[] = [];
+  const warnings: string[] = [];
+
+  if (!route.stops.length) hardFailures.push('路线没有可用站点');
+
+  for (const stop of route.stops) {
+    const leg = stop.legFromPrev;
+    if (!leg) continue;
+    if (leg.minutes > HARD_MAX_LEG_MINUTES) hardFailures.push(`${stop.scored.poi.name} 前一段 ${leg.minutes} 分钟`);
+    if (leg.distM > HARD_MAX_LEG_DISTANCE_M) hardFailures.push(`${stop.scored.poi.name} 前一段 ${(leg.distM / 1000).toFixed(1)}km`);
+    if (leg.mode === 'walk' && leg.minutes > HARD_MAX_WALK_MINUTES) hardFailures.push(`${stop.scored.poi.name} 前一段步行 ${leg.minutes} 分钟`);
+  }
+
+  const totalMove = route.totalWalkMin + route.totalTransitMin;
+  if (totalMove >= HARD_MAX_TOTAL_MOVE_MINUTES) hardFailures.push(`总移动约 ${totalMove} 分钟`);
+
+  if (c) {
+    const plannedEnd = c.startTime + c.durationMin / 60;
+    if (route.endTime > plannedEnd + 0.5) hardFailures.push(`预计 ${fmtHour(route.endTime)} 结束,明显超出 ${fmtHour(plannedEnd)}`);
+    if (route.endTime - c.startTime > 10) hardFailures.push(`行程跨度超过 10 小时`);
+
+    const budget = routeBudgetVerdict(route, c);
+    if (budget.tone === 'over') hardFailures.push(budget.label);
+    if (budget.tone === 'warn') warnings.push(budget.label);
+  }
+
+  for (const check of route.checks) {
+    if (check.status === 'fail') hardFailures.push(`${check.label}:${check.detail}`);
+    if (check.status === 'warn') warnings.push(`${check.label}:${check.detail}`);
+  }
+
+  const dedupedHard = [...new Set(hardFailures)];
+  const dedupedWarn = [...new Set(warnings)];
+
+  if (dedupedHard.length) {
+    return {
+      status: 'blocked',
+      stamp: '需调整',
+      label: '需调整',
+      tone: 'red',
+      hardFailures: dedupedHard,
+      warnings: dedupedWarn,
+    };
+  }
+  if (dedupedWarn.length) {
+    return {
+      status: 'adjust',
+      stamp: '建议调整',
+      label: '有提醒',
+      tone: 'amber',
+      hardFailures: [],
+      warnings: dedupedWarn,
+    };
+  }
+  return {
+    status: 'ready',
+    stamp: '拿来就走',
+    label: '行程宽松',
+    tone: 'green',
+    hardFailures: [],
+    warnings: [],
+  };
+}
+
 export interface RouteAdvantage {
   label: string;
   note: string;

@@ -3,6 +3,7 @@ import { checkSummary } from './validateRoute';
 import { AREA_MAP } from '../data/areas';
 import { haversineM } from './geo';
 import { anchorAreas } from './parseConstraints';
+import { routeVerdict } from '../lib/display';
 import {
   hasExplicitFamilyIntent,
   isAdultNightlifePOI,
@@ -79,8 +80,9 @@ export function rankRoutes(
     }
 
     const semanticScore = semanticRouteScore(r, c, persona);
+    const verdictPenalty = routeVerdict(r, c).status === 'blocked' ? -10000 : 0;
 
-    const finalScore = +(r.score + checkScore + paceScore + compactScore + budgetScore + anchorScore + semanticScore).toFixed(1);
+    const finalScore = +(r.score + checkScore + paceScore + compactScore + budgetScore + anchorScore + semanticScore + verdictPenalty).toFixed(1);
     return { ...r, score: finalScore };
   });
 

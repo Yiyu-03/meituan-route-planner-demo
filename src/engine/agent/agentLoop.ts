@@ -12,6 +12,7 @@ import { validateRoute, violationsFromChecks } from '../validateRoute';
 import { rankRoutes } from '../rankRoutes';
 import { explainRoute } from '../explainRoute';
 import { repairIfNeeded } from './repairRoute';
+import { routeVerdict } from '../../lib/display';
 
 export type AgentStageCallback = (stage: AgentStageKey, payload: unknown) => void;
 
@@ -108,7 +109,7 @@ export function runAgentLoop(
     if (!ranked[0]) return { routes: ranked, repairLog: [] };
     const repaired = repairIfNeeded(ranked[0], constraints, persona, candidates);
     const candidatesAfterRepair: Route[] = [repaired.route, ...ranked.slice(1)];
-    const fallbackIdx = candidatesAfterRepair.findIndex((route) => !route.checks.some((check) => check.status === 'fail'));
+    const fallbackIdx = candidatesAfterRepair.findIndex((route) => routeVerdict(route, constraints).status !== 'blocked');
     const routes = (fallbackIdx > 0
       ? [candidatesAfterRepair[fallbackIdx], ...candidatesAfterRepair.filter((_, idx) => idx !== fallbackIdx)]
       : candidatesAfterRepair
