@@ -15,7 +15,7 @@ function normalizePoi(poi) {
   };
 }
 
-async function fetchWithTimeout(url, timeoutMs = 1600) {
+async function fetchWithTimeout(url, timeoutMs = 3200) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
