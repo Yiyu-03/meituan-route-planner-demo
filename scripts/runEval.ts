@@ -1,6 +1,7 @@
 import {
   CASES, PERSONA_DIFF_CASES, runCase, runPersonaDiff,
 } from '../src/eval/cases';
+import { readFileSync } from 'node:fs';
 import { PERSONA_MAP } from '../src/data/personas';
 import { buildAmapCityPlan } from '../src/lib/amapPlan';
 import { runPipeline } from '../src/engine/pipeline';
@@ -51,11 +52,14 @@ for (const c of PERSONA_DIFF_CASES) {
 }
 
 // ---- Part 3: 产品体验回归 ----
-console.log(`${C.bold}【Part 3】产品体验回归(5 cases)${C.reset}\n`);
+console.log(`${C.bold}【Part 3】产品体验回归(8 cases)${C.reset}\n`);
 
 const productResults = [
   runRouteVerdictHardGateCase(),
   await runSuzhouRemoteCase('朋友来苏州，带他园区转转，他上午10点到，预算300吃午饭，打算逛园林、博物馆'),
+  await runSuzhouKunshanCase('朋友来苏州昆山区，他上午10点到，预算200吃午饭，打算带他听昆区，逛逛自然风光、博物馆什么的'),
+  await runSuzhouHuqiuCase('朋友来苏州，带他虎丘区转转，他上午10点到，预算人均150吃午饭，暂时没想好去哪里逛，但是多逛几个地方。也可以去KTV等地方'),
+  runUiNoDebugCase(),
   runDaxueluBudgetCase('周五晚上和朋友在大学路聚会，人均200以内，想热闹但不要太累'),
   await runHangzhouRemoteCase('朋友来杭州，下午在西湖附近逛逛，预算200，想轻松一点'),
   runShanghaiMockRegression(),
@@ -106,6 +110,13 @@ function routeHasHardMove(route: Route): boolean {
     if (!leg) return false;
     return leg.minutes >= 100 || leg.distM > 12000 || leg.minutes > 45;
   }) || routeMoveMin(route) >= 100;
+}
+
+function explicitInterestCount(route: Route | undefined): number {
+  if (!route) return 0;
+  return route.stops.filter((stop) =>
+    /园林|博物馆|博物院|美术馆|展馆|展示馆|自然风光|自然|公园|景区|风景|森林|湿地|湖|山|亭林/.test(stop.scored.poi.name),
+  ).length;
 }
 
 function runRouteVerdictHardGateCase(): ProductCaseResult {
@@ -221,7 +232,7 @@ async function runSuzhouRemoteCase(input: string): Promise<ProductCaseResult> {
       { name: 'POI 来源高德', pass: Boolean(route?.stops.every((stop) => stop.scored.poi.source === 'amap')), desc: '所有站点标记为 amap' },
       { name: '过滤噪声类型', pass: Boolean(route?.stops.every((stop) => !badRe.test(stop.scored.poi.name))), desc: '不出现 KTV/舞厅/电玩/酒吧/洗浴' },
       { name: '过滤低信誉小店', pass: Boolean(route?.stops.every((stop) => !/胡子饮食店|饮食店|工作室|私人影院/.test(stop.scored.poi.name))), desc: '不把低可信小店作为核心推荐' },
-      { name: '含园林/文化', pass: Boolean(route?.stops.some((stop) => /园林|拙政园|景区|金鸡湖|展示馆|博物馆|公园/.test(stop.scored.poi.name))), desc: '至少 1 个园林/文化/公园类 POI' },
+      { name: '显式兴趣≥2', pass: explicitInterestCount(route) >= 2, desc: '园林/博物馆/自然风光/展馆等显式兴趣至少 2 个核心站点' },
       { name: '含博物馆/展馆', pass: Boolean(route?.stops.some((stop) => /博物馆|展馆|展示馆|美术馆/.test(stop.scored.poi.name))), desc: '尽量安排博物馆/展馆' },
       { name: '正餐最多 1 个', pass: mealStops.length <= 1, desc: '6 小时以内不安排两顿正餐' },
       { name: '午饭在饭点', pass: Boolean(lunch && lunch.arrive >= 11.5 && lunch.arrive <= 13.5), desc: '午饭到达时间在 11:30-13:30' },
@@ -236,6 +247,7 @@ async function runSuzhouRemoteCase(input: string): Promise<ProductCaseResult> {
       { name: 'Agent 不再未识别', pass: agentRefines.every((item) => !/未能识别/.test(item.message) && item.actual !== 'unknown'), desc: '苏州自由文本修改均有结构化意图' },
       { name: 'Agent validator 闸门', pass: agentRefines.every((item) => item.validation !== 'fail' && !routeHasHardMove(item.route)), desc: '修改后路线无 fail,无 100min+ 或超长单段移动' },
       { name: 'Agent stamp 一致', pass: agentRefines.every((item) => item.validation === 'pass' ? true : item.stamp !== '拿来就走'), desc: '有 warn/fail 时不盖拿来就走' },
+      { name: 'addStop 合同', pass: agentRefines.filter((item) => item.text === '多逛几个地方').every((item) => item.route.stops.length > route!.stops.length ? routeVerdict(item.route, result!.constraints).status !== 'blocked' : /时间窗口|移动距离|不适合再增加|保留/.test(item.message)), desc: '多逛几个地方要么安全加站,要么解释为什么不加' },
       { name: 'Agent 耗时', pass: agentRefines.every((item) => item.elapsedMs <= 10000), desc: '临时修改生成 <=10s 或降级 <=10s' },
     ];
     return {
@@ -248,6 +260,91 @@ async function runSuzhouRemoteCase(input: string): Promise<ProductCaseResult> {
   } finally {
     globalThis.fetch = oldFetch;
   }
+}
+
+async function runSuzhouKunshanCase(input: string): Promise<ProductCaseResult> {
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = mockAmapFetch as typeof fetch;
+  try {
+    const result = await buildAmapCityPlan(input, { city: '苏州', input }, PERSONA_MAP.friends);
+    const route = result?.routes[0];
+    const routeText = route?.stops.map((stop) => stop.scored.poi.name).join(' → ') ?? '';
+    const badCity = /留园|三香路|苏州革命博物馆|拙政园|姑苏/.test(routeText);
+    const asserts = [
+      { name: '生成路线', pass: Boolean(route), desc: '昆山误写为昆山区也能生成区域路线' },
+      { name: '围绕昆山', pass: Boolean(route?.stops.every((stop) => /昆山|亭林|森林/.test(`${stop.scored.poi.name} ${stop.scored.poi.ugc}`))), desc: '候选和路线围绕昆山/昆山市' },
+      { name: '不跑苏州市区', pass: Boolean(route && !badCity), desc: '不得出现留园/三香路/苏州市区 POI' },
+      { name: '显式兴趣≥2', pass: explicitInterestCount(route) >= 2, desc: '自然风光/博物馆至少 2 个核心站点' },
+      { name: '移动硬闸门', pass: Boolean(route && routeVerdict(route, result!.constraints).status !== 'blocked' && !routeHasHardMove(route)), desc: '昆山路线不得有 100min+ 或超长单段移动' },
+    ];
+    return {
+      id: 'remote-suzhou-kunshan',
+      title: '苏州·昆山强区域',
+      asserts,
+      allPass: asserts.every((item) => item.pass),
+      stops: route?.stops.map((stop) => stop.scored.poi.name) ?? [],
+    };
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+}
+
+async function runSuzhouHuqiuCase(input: string): Promise<ProductCaseResult> {
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = mockAmapFetch as typeof fetch;
+  try {
+    const result = await buildAmapCityPlan(input, { city: '苏州', input }, PERSONA_MAP.friends);
+    const route = result?.routes[0];
+    const refine = route
+      ? await runRefineAgent({
+        rawInput: '多逛几个地方',
+        currentRoute: route,
+        constraints: result!.constraints,
+        persona: PERSONA_MAP.friends,
+        candidates: result!.candidates,
+        originalRequest: input,
+        useLLM: false,
+      })
+      : null;
+    const routeText = route?.stops.map((stop) => stop.scored.poi.name).join(' → ') ?? '';
+    const allHuqiu = route?.stops.every((stop) => /虎丘|高新区|山塘/.test(`${stop.scored.poi.name} ${stop.scored.poi.ugc}`)) ?? false;
+    const addStopOk = !route || !refine
+      ? false
+      : refine.route.stops.length > route.stops.length
+        ? routeVerdict(refine.route, refine.constraints).status !== 'blocked'
+        : /时间窗口|移动距离|不适合再增加|保留|延长/.test(refine.message);
+    const asserts = [
+      { name: '生成路线', pass: Boolean(route), desc: '虎丘区输入能生成路线' },
+      { name: '虎丘强区域', pass: Boolean(route && allHuqiu), desc: '候选 POI 优先虎丘区/虎丘景区附近' },
+      { name: '不跨苏州市区', pass: Boolean(route && !/留园|三香路|金鸡湖|工业园区/.test(routeText)), desc: '虎丘区路线不跑园区/姑苏老城核心' },
+      { name: '移动硬闸门', pass: Boolean(route && routeVerdict(route, result!.constraints).status !== 'blocked' && !routeHasHardMove(route)), desc: '当前路线不得有硬移动失败' },
+      { name: 'addStop 合同', pass: addStopOk, desc: '多逛几个地方要么新增安全站,要么解释不可新增原因' },
+    ];
+    return {
+      id: 'remote-suzhou-huqiu',
+      title: '苏州·虎丘强区域与加站',
+      asserts,
+      allPass: asserts.every((item) => item.pass),
+      stops: route?.stops.map((stop) => stop.scored.poi.name) ?? [],
+    };
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+}
+
+function runUiNoDebugCase(): ProductCaseResult {
+  const source = readFileSync(new URL('../src/views/MainDashboard.tsx', import.meta.url), 'utf8');
+  const debugRe = /Intent:|validator:|tool:|slots:|confidence|primaryIntent|validationStatus/;
+  const asserts = [
+    { name: '临时修改无 debug', pass: !debugRe.test(source), desc: '右侧临时修改区域不暴露 Intent/validator/tool/slots/confidence' },
+  ];
+  return {
+    id: 'ui-replan-no-debug',
+    title: 'UI·临时修改隐藏内部字段',
+    asserts,
+    allPass: asserts.every((item) => item.pass),
+    stops: ['MainDashboard.tsx'],
+  };
 }
 
 function runDaxueluBudgetCase(input: string): ProductCaseResult {
@@ -341,11 +438,28 @@ async function mockAmapFetch(input: unknown): Promise<Response> {
 
   const keyword = url.searchParams.get('keyword') ?? '';
   const city = url.searchParams.get('city') ?? '';
+  const area = url.searchParams.get('area') ?? '';
   if (city.includes('杭州')) {
     return jsonResponse({
       status: 'ok',
       configured: true,
       results: mockHangzhouPois(keyword),
+      source: 'amap_place_text',
+    });
+  }
+  if (/昆山/.test(`${city} ${area} ${keyword}`)) {
+    return jsonResponse({
+      status: 'ok',
+      configured: true,
+      results: mockKunshanPois(keyword),
+      source: 'amap_place_text',
+    });
+  }
+  if (/虎丘|高新区/.test(`${area} ${keyword}`)) {
+    return jsonResponse({
+      status: 'ok',
+      configured: true,
+      results: mockHuqiuPois(keyword),
       source: 'amap_place_text',
     });
   }
@@ -385,6 +499,55 @@ async function mockAmapFetch(input: unknown): Promise<Response> {
     results,
     source: 'amap_place_text',
   });
+}
+
+function mockKunshanPois(keyword: string): AmapMockPoi[] {
+  const badCity = [
+    { name: '留园', address: '苏州市姑苏区留园路', location: '120.596000,31.318000', type: '风景名胜;园林', source: 'amap' },
+    { name: '三香路餐厅', address: '苏州市姑苏区三香路', location: '120.600000,31.305000', type: '餐饮服务;中餐厅', source: 'amap' },
+  ];
+  if (/美食|餐厅|中餐厅|昆山餐厅/.test(keyword)) {
+    return [
+      { name: '昆山亭林路本帮菜馆', address: '昆山市亭林路', location: '120.965500,31.386500', type: '餐饮服务;中餐厅;苏帮菜', source: 'amap' },
+      ...badCity,
+    ];
+  }
+  if (/博物馆|昆山博物馆/.test(keyword)) {
+    return [
+      { name: '昆山博物馆', address: '昆山市亭林路', location: '120.966500,31.389000', type: '科教文化服务;博物馆', source: 'amap' },
+      ...badCity,
+    ];
+  }
+  if (/自然风光|公园|森林|亭林|景点|文化景点|园林/.test(keyword)) {
+    return [
+      { name: '亭林园', address: '昆山市马鞍山东路', location: '120.957800,31.387500', type: '风景名胜;公园广场;公园', source: 'amap' },
+      { name: '昆山市城市生态森林公园', address: '昆山市马鞍山西路', location: '120.930000,31.390000', type: '风景名胜;公园广场;公园', source: 'amap' },
+      ...badCity,
+    ];
+  }
+  return [
+    { name: '昆山博物馆', address: '昆山市亭林路', location: '120.966500,31.389000', type: '科教文化服务;博物馆', source: 'amap' },
+    { name: '亭林园', address: '昆山市马鞍山东路', location: '120.957800,31.387500', type: '风景名胜;公园广场;公园', source: 'amap' },
+    ...badCity,
+  ];
+}
+
+function mockHuqiuPois(keyword: string): AmapMockPoi[] {
+  if (/美食|餐厅|中餐厅|虎丘餐厅/.test(keyword)) {
+    return [
+      { name: '虎丘山塘家常菜', address: '苏州市虎丘区虎丘路', location: '120.570000,31.327000', type: '餐饮服务;中餐厅', source: 'amap' },
+    ];
+  }
+  if (/KTV|娱乐/.test(keyword)) {
+    return [
+      { name: '虎丘区量贩KTV', address: '苏州市虎丘区', location: '120.568000,31.325000', type: '体育休闲服务;娱乐场所;KTV', source: 'amap' },
+    ];
+  }
+  return [
+    { name: '虎丘景区', address: '苏州市虎丘区虎丘山门内', location: '120.576000,31.329000', type: '风景名胜;风景名胜', source: 'amap' },
+    { name: '苏州高新区文体中心', address: '苏州市虎丘区太湖大道', location: '120.560000,31.315000', type: '科教文化服务;文化宫', source: 'amap' },
+    { name: '虎丘湿地公园', address: '苏州市虎丘区', location: '120.552000,31.348000', type: '风景名胜;公园广场;公园', source: 'amap' },
+  ];
 }
 
 function mockHangzhouPois(keyword: string): AmapMockPoi[] {

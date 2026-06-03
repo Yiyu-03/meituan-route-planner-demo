@@ -493,6 +493,8 @@ function prefixMessage(intent: RefineIntentJSON, body: string): string {
 export async function runRefineAgent(input: RefineAgentInput): Promise<RefineAgentResult> {
   const start = performance.now();
   const intent = await resolveRefineIntent(input);
+  const originalRoute = input.currentRoute;
+  const originalConstraints = input.constraints;
   let route = input.currentRoute;
   let constraints = input.constraints;
   let changed: string[] = [];
@@ -581,9 +583,22 @@ export async function runRefineAgent(input: RefineAgentInput): Promise<RefineAge
 
   const guarded = ensureSafeRoute(route, constraints, input.persona, input.candidates);
   route = guarded.route;
+  let repairApplied = guarded.repairApplied;
+  let guardFallbackUsed = guarded.fallbackUsed;
+  const nextVerdict = routeVerdict(route, constraints);
+  const originalVerdict = routeVerdict(originalRoute, originalConstraints);
+  if (nextVerdict.status === 'blocked' && originalVerdict.status !== 'blocked') {
+    route = originalRoute;
+    constraints = originalConstraints;
+    changed = [];
+    executed = false;
+    repairApplied = true;
+    guardFallbackUsed = true;
+    body = `${body} 但调整后的路线仍会超出时间/距离闸门，已保留当前安全路线。可以缩短站点、放宽区域或延长结束时间后再试。`;
+  }
   const status = routeValidationStatus(route, constraints);
   const elapsedMs = +(performance.now() - start).toFixed(2);
-  const fallbackUsed = guarded.fallbackUsed || elapsedMs > MAX_AGENT_MS;
+  const fallbackUsed = guardFallbackUsed || elapsedMs > MAX_AGENT_MS;
   const message = prefixMessage(intent, body);
   const summary: RefineAgentSummary = {
     primaryIntent: intent.primaryIntent,
@@ -594,7 +609,7 @@ export async function runRefineAgent(input: RefineAgentInput): Promise<RefineAge
     tool,
     executed,
     validationStatus: status,
-    repairApplied: guarded.repairApplied,
+    repairApplied,
     fallbackUsed,
     message,
   };
@@ -607,7 +622,7 @@ export async function runRefineAgent(input: RefineAgentInput): Promise<RefineAge
     message,
     tool,
     executed,
-    repairApplied: guarded.repairApplied,
+    repairApplied,
     fallbackUsed,
     elapsedMs,
     summary,

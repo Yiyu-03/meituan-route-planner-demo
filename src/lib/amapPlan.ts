@@ -6,6 +6,7 @@ import { scorePOIs } from '../engine/scorePOIs';
 import { validateRoute, violationsFromChecks } from '../engine/validateRoute';
 import { explainRoute } from '../engine/explainRoute';
 import { haversineM } from '../engine/geo';
+import { routeVerdict } from './display';
 import type {
   AgentTraceStep,
   AgentStageKey,
@@ -68,13 +69,13 @@ const LABELS: Record<AgentStageKey, string> = {
   explainRoute: '解释生成',
 };
 
-const KNOWN_CITY_NAMES = ['杭州', '北京', '深圳', '广州', '南京', '苏州', '成都', '重庆', '武汉', '西安'];
+const KNOWN_CITY_NAMES = ['昆山', '杭州', '北京', '深圳', '广州', '南京', '苏州', '成都', '重庆', '武汉', '西安'];
 const ADULT_OR_NOISY_POI_RE = /KTV|量贩|歌厅|舞厅|歌舞|夜店|酒吧|清吧|酒廊|迪厅|蹦迪|电玩|电玩城|电子游戏|网吧|棋牌|麻将|洗浴|足浴|按摩|SPA|桑拿|会所|夜总会|台球|桌球/i;
 const EXPLICIT_ADULT_OR_NOISY_RE = /KTV|唱歌|酒吧|夜生活|蹦迪|电玩|电玩城|游戏厅|舞厅|LiveHouse|livehouse|小酌|喝一杯|夜店|按摩|洗浴/i;
-const CULTURE_WALK_RE = /园区转转|园林|博物馆|博物院|美术馆|展览|展馆|逛|citywalk|文艺|文化|历史|公园|街区|古镇|安静|轻松|西湖/;
+const CULTURE_WALK_RE = /园区转转|园林|博物馆|博物院|美术馆|展览|展馆|自然风光|自然|逛|citywalk|文艺|文化|历史|公园|街区|古镇|安静|轻松|西湖/;
 const MEAL_RE = /吃饭|午饭|午餐|晚饭|晚餐|美食|餐厅|正餐|吃点/;
 const LOW_TRUST_AMAP_RE = /私人影院|工作室|量贩|会所|KTV|歌厅|舞厅|酒吧|夜店|洗浴|按摩|足浴|电玩|电玩城|棋牌|麻将|网吧|饮食店|快餐|便利店|小卖部|食杂|成人|养生|采耳/i;
-const NON_ROUTE_PLACE_RE = /酒店|宾馆|学校|小学|中学|大学|幼儿园|写字楼|产业园区|商务住宅|售楼|停车场|政府机构/i;
+const NON_ROUTE_PLACE_RE = /酒店|宾馆|学校|小学|中学|大学|幼儿园|写字楼|产业园区|商务住宅|售楼|停车场|政府机构|国际博览中心|博览中心|会展中心|会议中心/i;
 const ODD_DINING_RE = /游轮|码头|酒店|宾馆|咖啡厅|咖啡店|茶饮|奶茶|甜品/i;
 const UNAVAILABLE_POI_RE = /暂停开放|停止开放|临时闭馆|闭馆|已关闭|停业|歇业/i;
 const TRUSTED_DINING_RE = /餐厅|中餐|西餐|本帮|杭帮|苏帮|菜馆|酒楼|饭店|食府|火锅|烧烤|面馆|茶餐厅|咖啡|轻食|小馆/;
@@ -93,6 +94,21 @@ const AREA_CENTERS: Record<string, { lng: number; lat: number; aliases: string[]
     lat: 31.318,
     aliases: ['苏州工业园区', '工业园区', '园区', '金鸡湖', '东方之门', '诚品'],
   },
+  kunshan: {
+    lng: 120.981,
+    lat: 31.385,
+    aliases: ['苏州昆山', '昆山市', '昆山区', '昆山'],
+  },
+  huqiu: {
+    lng: 120.566,
+    lat: 31.326,
+    aliases: ['虎丘区', '虎丘景区', '虎丘', '苏州高新区', '高新区'],
+  },
+  gusu: {
+    lng: 120.624,
+    lat: 31.311,
+    aliases: ['姑苏区', '姑苏', '平江路', '观前街'],
+  },
   hangzhou_westlake: {
     lng: 120.145,
     lat: 30.252,
@@ -105,9 +121,12 @@ function getAmapCityName(city: string, raw: string): string {
 }
 
 function getAreaKeyword(raw: string, city: string): string {
+  if (/昆山|昆山区|昆山市|苏州昆山/.test(raw)) return '昆山 昆山市';
+  if (/虎丘区|虎丘景区|虎丘|苏州高新区|高新区/.test(raw)) return '虎丘区 虎丘景区 苏州高新区';
   if (/苏州/.test(raw) && /工业园区|园区|金鸡湖|东方之门|诚品/.test(raw)) return '苏州工业园区 金鸡湖';
+  if (/苏州/.test(raw) && /姑苏|平江路|观前街/.test(raw)) return '姑苏区';
   if (/杭州/.test(raw) && /西湖|湖滨|断桥|孤山/.test(raw)) return '西湖附近';
-  const areaWords = ['余杭', '西湖', '拱墅', '萧山', '滨江', '三里屯', '国贸', '海淀', '南山', '福田', '天河', '新街口', '姑苏', '工业园区', '园区', '金鸡湖', '太古里'];
+  const areaWords = ['余杭', '西湖', '拱墅', '萧山', '滨江', '三里屯', '国贸', '海淀', '南山', '福田', '天河', '新街口', '姑苏', '虎丘', '昆山', '工业园区', '园区', '金鸡湖', '太古里'];
   return areaWords.find((word) => raw.includes(word)) ?? city.split('/')[1] ?? '';
 }
 
@@ -147,20 +166,25 @@ function queryKeywords(raw: string): string[] {
     words.add('美食');
     words.add('餐厅');
     words.add('中餐厅');
+    if (/昆山/.test(raw)) words.add('昆山餐厅');
+    if (/虎丘|高新区/.test(raw)) words.add('虎丘餐厅');
     if (/苏州|金鸡湖|园区/.test(raw)) words.add('苏州菜');
     if (/杭州|西湖/.test(raw)) words.add('杭帮菜');
   }
   if (hasCultureWalkIntent(raw)) {
     ['园林', '博物馆', '文化景点', '公园'].forEach((word) => words.add(word));
+    if (/自然风光|自然/.test(raw)) words.add('自然风光');
+    if (/昆山/.test(raw)) ['昆山博物馆', '亭林园', '森林公园'].forEach((word) => words.add(word));
+    if (/虎丘|高新区/.test(raw)) ['虎丘景区', '虎丘公园', '苏州高新区博物馆'].forEach((word) => words.add(word));
     words.add('咖啡');
   }
   if (/咖啡|茶|下午茶|接电话|安静|轻松|坐/.test(raw)) words.add('咖啡');
-  if (/博物馆|美术馆|文化|文艺|历史|展|逛逛|citywalk/.test(raw)) words.add('景点');
-  if (/拍照|出片|打卡|citywalk|逛逛/.test(raw)) words.add('公园');
+  if (/博物馆|美术馆|文化|文艺|历史|展|逛逛|citywalk|自然风光/.test(raw)) words.add('景点');
+  if (/拍照|出片|打卡|citywalk|逛逛|自然风光/.test(raw)) words.add('公园');
   if (/购物|商场|买/.test(raw)) words.add('商场');
   if (/KTV|唱歌|密室|桌游|电影|影院|剧场|电玩|酒吧|夜生活|蹦迪|LiveHouse|livehouse/.test(raw)) words.add('娱乐');
   if (!words.size) ['景点', '美食', '咖啡', '商场'].forEach((word) => words.add(word));
-  return [...words].slice(0, 9);
+  return [...words].slice(0, 12);
 }
 
 function parseLocation(location?: string): { lng: number; lat: number } | null {
@@ -253,8 +277,9 @@ function amapQualityScore(item: AmapPoiResult, category: Category, constraints: 
     (category === 'culture' && TRUSTED_CULTURE_RE.test(text))
     || (category === 'dining' && TRUSTED_DINING_RE.test(text))
     || (category === 'cafe' && /咖啡|茶|甜品|饮品|轻食/.test(text))
+    || (category === 'entertainment' && wantsAdultOrNoisy(constraints.raw))
     || (!hasCultureWalkIntent(constraints.raw) && category !== 'entertainment');
-  const lowTrust = LOW_TRUST_AMAP_RE.test(text);
+  const lowTrust = LOW_TRUST_AMAP_RE.test(text) && !(wantsAdultOrNoisy(constraints.raw) && category === 'entertainment');
   const rating = +(lowTrust ? 4.0 : intentMatch ? 4.55 - (index % 3) * 0.04 : 4.32 - (index % 3) * 0.04).toFixed(1);
   const reviews = lowTrust ? 180 + index * 23 : intentMatch ? 1200 + index * 173 : 620 + index * 91;
   return {
@@ -308,6 +333,7 @@ function matchesAmapIntent(poi: POI, constraints: Constraints): boolean {
   if (poi.category === 'culture') return TRUSTED_CULTURE_RE.test(text);
   if (poi.category === 'dining') return TRUSTED_DINING_RE.test(text);
   if (poi.category === 'cafe') return /咖啡|茶|甜品|饮品|轻食/.test(text);
+  if (poi.category === 'entertainment') return wantsAdultOrNoisy(constraints.raw);
   if (hasCultureWalkIntent(constraints.raw)) return false;
   return true;
 }
@@ -316,6 +342,22 @@ function passesAmapQuality(poi: POI, constraints: Constraints): boolean {
   if (isBlockedAmapPoi(poi, constraints)) return false;
   if (poi.rating < 4.3 || poi.reviews < 500) return false;
   return matchesAmapIntent(poi, constraints);
+}
+
+function wantsCoreCulture(raw: string): boolean {
+  return /园林|博物馆|博物院|美术馆|展馆|展览|自然风光|自然|公园|景区|风景|文化|历史/.test(raw);
+}
+
+function coreCultureMatch(item: ScoredPOI | POI): boolean {
+  const poi = 'poi' in item ? item.poi : item;
+  const text = `${poi.name} ${poi.ugc}`;
+  if (poi.category !== 'culture') return false;
+  if (/国际博览中心|博览中心|会展中心|会议中心/.test(text)) return false;
+  return /园林|博物馆|博物院|美术馆|展馆|展览馆|展示馆|纪念馆|文化馆|艺术馆|公园|景区|风景|自然|森林|湿地|湖|山|古镇|亭林|虎丘|周庄/.test(text);
+}
+
+function coreCultureCount(route: Route): number {
+  return route.stops.filter((stop) => coreCultureMatch(stop.scored)).length;
 }
 
 function looksTrustedDiningResult(item: AmapPoiResult): boolean {
@@ -470,6 +512,9 @@ function chooseStops(candidates: ScoredPOI[], constraints: Constraints) {
       if (preferredKind) {
         const preferred = pool.filter((item) => cultureKind(item) === preferredKind);
         if (preferred.length) pool = preferred;
+      }
+      if (wantsCoreCulture(constraints.raw)) {
+        pool = pool.sort((a, b) => Number(coreCultureMatch(b)) - Number(coreCultureMatch(a)) || b.score - a.score);
       }
     }
     const hit = pool[0];
@@ -707,6 +752,17 @@ async function buildRoute(stops: ReturnType<typeof chooseStops>, constraints: Co
     risks: [],
   };
   const checks = validateRoute(route, constraints, persona);
+  if (wantsCoreCulture(constraints.raw)) {
+    const count = coreCultureCount(route);
+    checks.push({
+      key: 'explicit-interest',
+      label: '显式兴趣',
+      status: count >= 2 ? 'pass' : 'warn',
+      detail: count >= 2
+        ? `已安排 ${count} 个园林/博物馆/自然风光/展馆相关站点`
+        : `园林/博物馆/自然风光/展馆相关召回不足,当前仅 ${count} 个,建议调整或放宽区域`,
+    });
+  }
   const violations = violationsFromChecks(route, checks);
   const explained = explainRoute({ ...route, checks, violations }, constraints, persona);
   return {
@@ -720,6 +776,39 @@ async function buildRoute(stops: ReturnType<typeof chooseStops>, constraints: Co
       ...explained.risks.filter((risk) => !risk.includes('当前路线各项约束均通过')),
     ].slice(0, 6),
   };
+}
+
+async function repairAmapHardConstraints(
+  initial: ScoredPOI[],
+  constraints: Constraints,
+  persona: Persona,
+): Promise<{ route: Route; stops: ScoredPOI[]; logs: RepairLog[] }> {
+  let stops = [...initial];
+  let route = await buildRoute(stops, constraints, persona);
+  const logs: RepairLog[] = [];
+  for (let round = 1; round <= 3 && routeVerdict(route, constraints).status === 'blocked'; round += 1) {
+    const before = stops.map((stop) => stop.poi.name).join(' → ');
+    const drop = route.stops
+      .map((stop, idx) => ({
+        idx,
+        stop,
+        burden: stop.scored.poi.avgDuration + (stop.legFromPrev?.minutes ?? 0),
+      }))
+      .filter(({ idx }) => canDropAmapStop(stops, idx, constraints))
+      .sort((a, b) => b.burden - a.burden || a.stop.scored.score - b.stop.scored.score)[0];
+    if (!drop) break;
+    stops = stops.filter((_, idx) => idx !== drop.idx);
+    route = await buildRoute(stops, constraints, persona);
+    logs.push({
+      round,
+      trigger: '硬约束',
+      action: `移除超出时间/移动闸门的非必要站「${drop.stop.scored.poi.name}」`,
+      before,
+      after: stops.map((stop) => stop.poi.name).join(' → '),
+      resolved: routeVerdict(route, constraints).status !== 'blocked',
+    });
+  }
+  return { route, stops, logs };
 }
 
 function traceStep(
@@ -799,10 +888,13 @@ export async function buildAmapCityPlan(
   const tBuild = performance.now();
   const selectedBeforeRepair = chooseStops(candidates, constraints);
   const budgetRepair = repairAmapBudget(selectedBeforeRepair, candidates, constraints);
-  const selected = budgetRepair.stops;
+  let selected = budgetRepair.stops;
   const minStops = Math.min(targetStopCount(constraints) >= 3 ? 3 : targetStopCount(constraints), pois.length);
   if (selected.length < minStops) return null;
-  const builtRoute = await buildRoute(selected, constraints, persona);
+  const hardRepair = await repairAmapHardConstraints(selected, constraints, persona);
+  selected = hardRepair.stops;
+  if (selected.length < minStops || routeVerdict(hardRepair.route, constraints).status === 'blocked') return null;
+  const builtRoute = hardRepair.route;
   const unresolvedBudget = budgetRepair.logs.find((log) => !log.resolved && log.action.includes('最低约'));
   const route = unresolvedBudget
     ? {
@@ -822,9 +914,9 @@ export async function buildAmapCityPlan(
     trace,
     'repairIfNeeded',
     '真实 POI 试验路线',
-    budgetRepair.logs.length ? budgetRepair.logs.map((log) => log.action).join('；') : '预算无需修复',
+    [...budgetRepair.logs, ...hardRepair.logs].length ? [...budgetRepair.logs, ...hardRepair.logs].map((log) => log.action).join('；') : '预算/硬约束无需修复',
     0,
-    budgetRepair.logs.length ? 'ok' : 'skip',
+    [...budgetRepair.logs, ...hardRepair.logs].length ? 'ok' : 'skip',
   );
   traceStep(trace, 'explainRoute', route.id, '生成数据源说明与风险提示', 0);
 
@@ -839,7 +931,7 @@ export async function buildAmapCityPlan(
     personaInference,
     conflict,
     agentTrace: trace,
-    repairLog: budgetRepair.logs,
+    repairLog: [...budgetRepair.logs, ...hardRepair.logs],
     slotPlan: route.coverage,
     retrieveNote: `非上海试验链路:POI 来自高德 Web 服务(${amapCity}${area ? `/${area}` : ''});${areaCenter ? '已按明确区域收紧半径;' : ''}已过滤低可信/冲突业态 ${Math.max(0, rawPois.length - pois.length)} 个;价格、排队、偏好解释仍由本地规则估算。`,
   };
