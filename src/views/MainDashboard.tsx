@@ -49,6 +49,7 @@ import {
   travelSummary,
 } from '../lib/display';
 import { buildReplanChips, type ReplanChip } from '../lib/replanChips';
+import { buildAmapCityPlan } from '../lib/amapPlan';
 
 type PersonaPick = 'auto' | string;
 type UserPreferenceKey = 'quiet' | 'budget' | 'avoidQueue' | 'family';
@@ -233,6 +234,33 @@ function makeSession(
   };
 }
 
+function makeSessionFromPlan(
+  input: string,
+  personaPick: PersonaPick,
+  index: number,
+  plan: PlanResult,
+  label: string | undefined,
+  profile: UserProfile | null = null,
+  ownerId = profileUserId(profile),
+  toast?: string,
+): PlannerSession {
+  const route = plan.routes[0];
+  return {
+    id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+    title: label ?? titleFromPlan(plan),
+    note: noteFromRoute(route),
+    color: NOTE_COLORS[index % NOTE_COLORS.length],
+    input,
+    personaPick,
+    plan,
+    activeRouteIdx: 0,
+    changedIds: [],
+    toast: [toast, budgetGuidance(route, plan.constraints.budgetPerCapita)].filter(Boolean).join(' '),
+    ownerId,
+    profileNote: userPreferenceNote(profile),
+  };
+}
+
 function demoSession(
   demo: DemoInput,
   index: number,
@@ -409,13 +437,40 @@ export function MainDashboard() {
     switchToSessions(nextSessions);
   };
 
-  const submitPlan = (event?: FormEvent) => {
+  const submitPlan = async (event?: FormEvent) => {
     event?.preventDefault();
     const text = draft.trim();
     if (!text || isPlanning) return;
     const unsupportedCity = detectUnsupportedCity(text);
     if (unsupportedCity) {
-      setCityGateNotice(unsupportedCity);
+      setCityGateNotice(null);
+      setIsPlanning(true);
+      try {
+        const manualPersona = personaPick === 'auto' ? undefined : PERSONA_MAP[personaPick];
+        const plan = await buildAmapCityPlan(applyUserProfileToInput(text, userProfile), unsupportedCity, manualPersona);
+        if (!plan?.routes.length) {
+          setCityGateNotice(unsupportedCity);
+          return;
+        }
+        const next = makeSessionFromPlan(
+          text,
+          personaPick,
+          sessions.length,
+          plan,
+          `${unsupportedCity.city} · 高德真实 POI`,
+          userProfile,
+          historyOwnerId,
+          '已调用高德真实 POI 生成试验路线；价格、排队、偏好解释仍为本地规则估算。',
+        );
+        setSessions((prev) => [next, ...prev].slice(0, 6));
+        setActiveSessionId(next.id);
+        setDraft(next.input);
+        setPersonaPick(next.personaPick);
+      } catch {
+        setCityGateNotice(unsupportedCity);
+      } finally {
+        setIsPlanning(false);
+      }
       return;
     }
     setCityGateNotice(null);
@@ -983,6 +1038,11 @@ function StopCard({
                 <Icon size={13} strokeWidth={1.6} />
                 {CATEGORY_LABEL[poi.category]}
               </span>
+              {poi.source === 'amap' && (
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-800">
+                  高德真实 POI
+                </span>
+              )}
               {isChanged && (
                 <span className="rounded-full bg-[#DDEFD2] px-2 py-1 text-[11px] font-semibold text-[#426D32]">
                   局部更新
@@ -1270,7 +1330,7 @@ function JudgeAppendix({ session, route }: { session: PlannerSession; route: Rou
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <AgentTrace trace={plan.agentTrace ?? []} />
         <div className="space-y-4">
-          <DataSourceCard />
+          <DataSourceCard plan={plan} />
 
           <div className="rounded-lg border border-[#E4D5BE] bg-[#FFF9ED] p-3">
             <div className="mb-2 flex items-center gap-2">
@@ -1317,8 +1377,9 @@ function JudgeAppendix({ session, route }: { session: PlannerSession; route: Rou
   );
 }
 
-function DataSourceCard() {
+function DataSourceCard({ plan }: { plan: PlanResult }) {
   const [amapStatus, setAmapStatus] = useState<'checking' | 'configured' | 'not_configured' | 'unreachable'>('checking');
+  const usesAmapPoi = plan.candidates.some((candidate) => candidate.poi.source === 'amap');
 
   useEffect(() => {
     let alive = true;
@@ -1368,13 +1429,21 @@ function DataSourceCard() {
           </div>
           <div className="rounded-lg border border-[#E4D5BE] bg-[#FFFDF8] p-2">
             <span className="text-[11px] text-[#8A765F]">当前路线数据源</span>
-            <p className="mt-1 font-semibold text-[#201B16]">mock POI · API adapter available</p>
+            <p className="mt-1 font-semibold text-[#201B16]">
+              {usesAmapPoi ? '高德真实 POI · 本地规则估算' : 'mock POI · API adapter available'}
+            </p>
           </div>
         </div>
-        <p>
-          当前路线主流程默认使用本地 mock POI、mock UGC、人均、排队、评分、营业与地图距离字段，
-          保证 Demo 稳定可演示,再由规则化 Agent Loop 完成规划。
-        </p>
+        {usesAmapPoi ? (
+          <p>
+            当前这条非上海试验路线使用高德真实 POI 名称、地址与坐标；人均、排队、UGC、偏好解释仍由本地规则估算。
+          </p>
+        ) : (
+          <p>
+            当前路线主流程默认使用本地 mock POI、mock UGC、人均、排队、评分、营业与地图距离字段，
+            保证 Demo 稳定可演示,再由规则化 Agent Loop 完成规划。
+          </p>
+        )}
         <p>
           链路为 parseConstraints → retrieveCandidates → scorePOIs → buildRouteCandidates → validateRoute → repair/replan → explainRoute。
         </p>

@@ -16,6 +16,7 @@
 - 数据来源说明：在“查看规划依据”附录中说明 mock 数据源、Vercel API adapter 和未来可替换的真实接口。
 - 独立 mock backend：`server/` 提供 mock auth、mock history、mock POI search 和 mock route estimate，用于说明服务端与数据源接口形态。
 - 高德 API adapter 雏形：`api/amap/poi-search` 和 `api/amap/route-walking` 可在 Vercel 配置 `AMAP_KEY` 后调用真实高德 Web 服务。
+- 非上海城市试验：上海继续使用稳定 mock 主流程；杭州/余杭、北京、深圳等城市会优先尝试高德真实 POI，失败时回到“不生成假外地路线”的提示。
 - 评测脚本：验证路线数量、预算/营业/排队/画像语义护栏、同输入不同画像差异等。
 
 ## Agent Loop
@@ -88,6 +89,8 @@ Vercel 配置 `AMAP_KEY`:
 4. 重新部署项目。
 
 配置后，adapter 可以调用真实高德 POI 搜索和步行路径估算；当前路线生成仍默认走本地 mock，以保证 Demo 稳定。后续如要切换为真实数据源，应让 `retrieveCandidates` 和 ETA 估算读取 adapter 返回结果，而不是让 LLM 直接生成路线文本。
+
+当前有一个轻量试验链路：当输入明确是杭州/余杭、北京、深圳等非上海城市时，前端会尝试调用 `api/amap/*` 获取真实 POI 与步行估算，生成一条简单路线。该路线会在页面标注“高德真实 POI”，但人均、排队、UGC、偏好解释仍是本地规则估算；尚未接入美团/点评真实交易、排队、UGC 或团购数据。
 
 ## Mock Backend
 

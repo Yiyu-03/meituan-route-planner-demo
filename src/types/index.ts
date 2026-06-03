@@ -44,7 +44,7 @@ export const SCENE_LABEL: Record<SceneTag, string> = {
 };
 
 /** Mock 数据来源,用于证明路线不是一句话写死,而是融合生活数据 + 导航数据 */
-export type DataSource = 'mock_dianping' | 'mock_meituan' | 'mock_map';
+export type DataSource = 'mock_dianping' | 'mock_meituan' | 'mock_map' | 'amap';
 
 export type Freshness = 'realtime' | 'daily' | 'static';
 

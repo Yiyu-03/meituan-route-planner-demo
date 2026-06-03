@@ -5,6 +5,7 @@ const SOURCE_LABEL: Record<string, string> = {
   mock_dianping: '生活数据: mock 点评/UGC',
   mock_meituan: '交易/履约数据: mock 美团',
   mock_map: '导航数据: mock 地图',
+  amap: '真实地图 POI: 高德 Web 服务',
 };
 
 export function DataSourcePanel({ plan, route }: { plan: PlanResult; route: Route }) {
@@ -47,11 +48,10 @@ export function DataSourcePanel({ plan, route }: { plan: PlanResult; route: Rout
             )) : <span className="text-[12px] text-ink-400">首站无需导航边</span>}
           </div>
           <p className="mt-2 text-[11px] leading-relaxed text-ink-400">
-            POI 评分使用标签、UGC、人均、评分、距离;动线时间使用 mock map leg,不让 LLM 直接编路线。
+            POI 评分使用标签、UGC、人均、评分、距离;非上海试验路线可使用高德 POI 与步行估算,价格/排队仍为本地规则估算。
           </p>
         </div>
       </div>
     </Card>
   );
 }
-
