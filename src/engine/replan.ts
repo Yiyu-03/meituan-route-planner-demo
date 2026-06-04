@@ -102,9 +102,13 @@ function recomputeTimeline(
     if (i > 0) {
       const d = distBetween(stops[i - 1].poi, sp.poi);
       const t = travelEstimate(d, persona.walkTolerance);
-      leg = { distM: Math.round(d), minutes: t.minutes, mode: t.mode };
-      clock += t.minutes / 60;
-      if (t.mode === 'walk') totalWalk += t.minutes; else totalTransit += t.minutes;
+      const isAdjacent = d < 20;
+      const minutes = isAdjacent ? Math.max(1, t.minutes) : t.minutes;
+      const distM = isAdjacent ? Math.max(15, Math.round(d)) : Math.round(d);
+      const mode = isAdjacent ? 'walk' : t.mode;
+      leg = { distM, minutes, mode };
+      clock += minutes / 60;
+      if (mode === 'walk') totalWalk += minutes; else totalTransit += minutes;
     }
     const arrive = Math.max(clock, sp.poi.openHour);
     const depart = arrive + sp.poi.avgDuration / 60;
