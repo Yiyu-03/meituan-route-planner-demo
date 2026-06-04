@@ -236,24 +236,26 @@ export function routeAdvantage(routes: Route[], index: number, budget?: number |
   const minBy = (selector: (route: Route) => number) => routes.every((item) => selector(route) <= selector(item));
   const maxBy = (selector: (route: Route) => number) => routes.every((item) => selector(route) >= selector(item));
   const photoNum = photoCount(route);
+  const budgetStatus = budget != null ? budgetVerdict(route.totalCost, budget) : null;
+  const overBudget = budgetStatus != null && budgetStatus.tone !== 'ok';
 
   if (base && route.totalCost < base.totalCost && (budget != null || minBy((item) => item.totalCost))) {
-    if (budget != null && route.totalCost > budget) {
-      const verdict = budgetVerdict(route.totalCost, budget);
+    if (budgetStatus && overBudget) {
       return {
         label: '相对省钱版',
-        note: `比推荐页少 ¥${base.totalCost - route.totalCost}/人，但仍${verdict.label}`,
+        note: `比推荐页少 ¥${base.totalCost - route.totalCost}/人，但仍${budgetStatus.label}`,
       };
     }
     return { label: '低预算版', note: `人均 ¥${route.totalCost}，比推荐页更省` };
   }
 
-  if (minBy(moveMin)) return { label: '少走路版', note: `全程移动约 ${moveMin(route)} 分钟，最省脚力` };
+  if (overBudget && budgetStatus) {
+    return { label: '需调整备选', note: `人均 ¥${route.totalCost}，${budgetStatus.label}，仅作参考` };
+  }
+  if (base && minBy(moveMin) && moveMin(route) < moveMin(base)) {
+    return { label: '少走路版', note: `全程移动约 ${moveMin(route)} 分钟，比推荐页更省脚力` };
+  }
   if (minBy((item) => item.totalCost)) {
-    if (budget != null && route.totalCost > budget) {
-      const verdict = budgetVerdict(route.totalCost, budget);
-      return { label: '相对省钱版', note: `人均 ¥${route.totalCost}，几条里最省，但仍${verdict.label}` };
-    }
     return { label: '低预算版', note: `人均 ¥${route.totalCost}，几条里最省` };
   }
   if (photoNum > 0 && maxBy(photoCount) && (!base || photoNum > photoCount(base))) {
@@ -290,7 +292,12 @@ export function formatLegMode(mode: 'walk' | 'transit'): string {
 }
 
 export function formatDistance(meters: number): string {
+  if (meters <= 0) return '相邻';
   return meters < 1000 ? `${meters}m` : `${(meters / 1000).toFixed(1)}km`;
+}
+
+export function formatMoveMinutes(minutes: number): string {
+  return `${Math.max(1, Math.round(minutes))} 分钟`;
 }
 
 export function travelSummary(route: Route): { label: string; value: string } {

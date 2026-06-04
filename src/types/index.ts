@@ -307,6 +307,21 @@ export interface PlanResult {
   repairLog?: RepairLog[];
   slotPlan?: Category[];
   retrieveNote?: string;
+  backendMeta?: {
+    status: string;
+    source: string;
+    city?: string;
+    province?: string;
+    district?: string;
+    anchors?: string[];
+    clarificationOptions?: string[];
+    locationResolution?: Record<string, unknown>;
+    warnings?: string[];
+    dataSources?: Record<string, unknown>;
+    preferenceImpact?: string[];
+    planningBasis?: Record<string, unknown>;
+    historyScope?: Record<string, unknown>;
+  };
 }
 
 /** refine 解析出的动作 */
@@ -331,6 +346,7 @@ export type RefinePrimaryIntent =
   | 'reduceTravel'
   | 'addStop'
   | 'addFoodOrDrink'
+  | 'avoidFoodOrDrink'
   | 'replaceFood'
   | 'lowerBudget'
   | 'makeQuiet'
@@ -343,6 +359,8 @@ export interface RefineIntentSlots {
   category?: string;
   area?: string;
   budget?: number;
+  stopCount?: number;
+  preferWalk?: boolean;
   tone?: string;
 }
 

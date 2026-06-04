@@ -69,7 +69,7 @@ const LABELS: Record<AgentStageKey, string> = {
   explainRoute: '解释生成',
 };
 
-const KNOWN_CITY_NAMES = ['昆山', '杭州', '北京', '深圳', '广州', '南京', '苏州', '成都', '重庆', '武汉', '西安'];
+const KNOWN_CITY_NAMES = ['乌鲁木齐', '喀什', '伊犁', '伊宁', '吐鲁番', '阿勒泰', '昆山', '杭州', '北京', '深圳', '广州', '南京', '苏州', '成都', '重庆', '武汉', '西安'];
 const ADULT_OR_NOISY_POI_RE = /KTV|量贩|歌厅|舞厅|歌舞|夜店|酒吧|清吧|酒廊|迪厅|蹦迪|电玩|电玩城|电子游戏|网吧|棋牌|麻将|洗浴|足浴|按摩|SPA|桑拿|会所|夜总会|台球|桌球/i;
 const EXPLICIT_ADULT_OR_NOISY_RE = /KTV|唱歌|酒吧|夜生活|蹦迪|电玩|电玩城|游戏厅|舞厅|LiveHouse|livehouse|小酌|喝一杯|夜店|按摩|洗浴/i;
 const CULTURE_WALK_RE = /园区转转|园林|博物馆|博物院|美术馆|展览|展馆|自然风光|自然|逛|citywalk|文艺|文化|历史|公园|街区|古镇|安静|轻松|西湖/;
@@ -79,7 +79,7 @@ const NON_ROUTE_PLACE_RE = /酒店|宾馆|学校|小学|中学|大学|幼儿园|
 const ODD_DINING_RE = /游轮|码头|酒店|宾馆|咖啡厅|咖啡店|茶饮|奶茶|甜品/i;
 const UNAVAILABLE_POI_RE = /暂停开放|停止开放|临时闭馆|闭馆|已关闭|停业|歇业/i;
 const TRUSTED_DINING_RE = /餐厅|中餐|西餐|本帮|杭帮|苏帮|菜馆|酒楼|饭店|食府|火锅|烧烤|面馆|茶餐厅|咖啡|轻食|小馆/;
-const TRUSTED_CULTURE_RE = /园林|博物馆|博物院|美术馆|展馆|展览馆|纪念馆|图书馆|艺术馆|公园|景区|风景|名胜|古迹|历史|文化|西湖|湖|街区|古镇/;
+const TRUSTED_CULTURE_RE = /园林|博物馆|博物院|美术馆|展馆|展览馆|纪念馆|图书馆|艺术馆|公园|景区|风景|名胜|古迹|历史|文化|西湖|湖|街区|古镇|古城|大巴扎|草原|峡谷|雪山|森林|湿地|葡萄沟/;
 const POI_SEARCH_TIMEOUT_MS = 3600;
 const ROUTE_WALK_TIMEOUT_MS = 900;
 const MAX_LEG_DISTANCE_M = 12000;
@@ -113,6 +113,31 @@ const AREA_CENTERS: Record<string, { lng: number; lat: number; aliases: string[]
     lng: 120.145,
     lat: 30.252,
     aliases: ['西湖', '西湖附近', '湖滨', '断桥', '孤山'],
+  },
+  urumqi_center: {
+    lng: 87.6168,
+    lat: 43.8256,
+    aliases: ['新疆', '乌鲁木齐', '乌市', '大巴扎', '红山'],
+  },
+  kashgar_old_city: {
+    lng: 75.9898,
+    lat: 39.4704,
+    aliases: ['喀什', '喀什古城'],
+  },
+  yili_yining: {
+    lng: 81.3179,
+    lat: 43.9219,
+    aliases: ['伊犁', '伊宁', '伊宁市'],
+  },
+  turpan_center: {
+    lng: 89.1841,
+    lat: 42.9476,
+    aliases: ['吐鲁番', '葡萄沟'],
+  },
+  altay_center: {
+    lng: 88.1396,
+    lat: 47.8486,
+    aliases: ['阿勒泰', '将军山'],
   },
 };
 
@@ -149,6 +174,48 @@ function localFallbackPoi(
 }
 
 function fallbackPoisFor(raw: string): POI[] {
+  if (/喀什/.test(raw)) {
+    return [
+      localFallbackPoi('fallback-kashgar-old-city', '喀什古城', 'culture', '喀什 喀什古城', 75.9898, 39.4704, 35, ['cultural', 'local']),
+      localFallbackPoi('fallback-kashgar-dining', '喀什古城新疆菜馆', 'dining', '喀什 喀什古城', 75.9912, 39.4685, 92, ['local', 'foodie']),
+      localFallbackPoi('fallback-kashgar-museum', '喀什地区博物馆', 'culture', '喀什', 75.9815, 39.4608, 28, ['cultural']),
+      localFallbackPoi('fallback-kashgar-tea', '喀什古城茶饮休息点', 'cafe', '喀什 喀什古城', 75.9878, 39.4698, 36, ['quiet', 'local']),
+    ];
+  }
+  if (/伊犁|伊宁/.test(raw)) {
+    return [
+      localFallbackPoi('fallback-yili-six-star', '伊宁六星街', 'culture', '伊犁 伊宁', 81.304, 43.916, 30, ['cultural', 'local']),
+      localFallbackPoi('fallback-yili-dining', '伊宁本地新疆菜馆', 'dining', '伊犁 伊宁', 81.311, 43.918, 88, ['local', 'foodie']),
+      localFallbackPoi('fallback-yili-museum', '伊犁州博物馆', 'culture', '伊犁 伊宁', 81.319, 43.922, 26, ['cultural']),
+      localFallbackPoi('fallback-yili-coffee', '伊宁街区咖啡休息点', 'cafe', '伊犁 伊宁', 81.315, 43.919, 36, ['quiet']),
+    ];
+  }
+  if (/吐鲁番/.test(raw)) {
+    return [
+      localFallbackPoi('fallback-turpan-museum', '吐鲁番博物馆', 'culture', '吐鲁番', 89.184, 42.943, 28, ['cultural']),
+      localFallbackPoi('fallback-turpan-dining', '吐鲁番本地新疆菜馆', 'dining', '吐鲁番', 89.186, 42.946, 86, ['local', 'foodie']),
+      localFallbackPoi('fallback-turpan-grape', '葡萄沟景区', 'culture', '吐鲁番 葡萄沟', 89.246, 42.957, 45, ['nature', 'cultural']),
+      localFallbackPoi('fallback-turpan-tea', '吐鲁番葡萄茶饮休息点', 'cafe', '吐鲁番', 89.188, 42.947, 34, ['quiet']),
+    ];
+  }
+  if (/阿勒泰/.test(raw)) {
+    return [
+      localFallbackPoi('fallback-altay-museum', '阿勒泰地区博物馆', 'culture', '阿勒泰', 88.135, 47.848, 25, ['cultural']),
+      localFallbackPoi('fallback-altay-dining', '阿勒泰本地新疆菜馆', 'dining', '阿勒泰', 88.139, 47.845, 88, ['local', 'foodie']),
+      localFallbackPoi('fallback-altay-park', '阿勒泰桦林公园', 'culture', '阿勒泰', 88.121, 47.851, 28, ['nature', 'quiet']),
+      localFallbackPoi('fallback-altay-coffee', '阿勒泰街区咖啡休息点', 'cafe', '阿勒泰', 88.136, 47.846, 35, ['quiet']),
+    ];
+  }
+  if (/新疆|乌鲁木齐|乌市/.test(raw)) {
+    return [
+      localFallbackPoi('fallback-urumqi-museum', '新疆维吾尔自治区博物馆', 'culture', '乌鲁木齐 沙依巴克区', 87.588, 43.816, 28, ['cultural']),
+      localFallbackPoi('fallback-urumqi-dining', '乌鲁木齐本地新疆菜馆', 'dining', '乌鲁木齐 天山区', 87.620, 43.793, 92, ['local', 'foodie']),
+      localFallbackPoi('fallback-urumqi-bazaar', '新疆国际大巴扎', 'shopping', '乌鲁木齐 天山区', 87.624, 43.785, 35, ['local', 'cultural']),
+      localFallbackPoi('fallback-urumqi-redhill', '红山公园', 'culture', '乌鲁木齐 水磨沟区', 87.606, 43.815, 24, ['nature', 'quiet']),
+      localFallbackPoi('fallback-urumqi-cafe', '大巴扎茶饮休息点', 'cafe', '乌鲁木齐 天山区', 87.622, 43.787, 34, ['quiet', 'local']),
+      localFallbackPoi('fallback-urumqi-night', '红山公园夜景观景点', 'nightscape', '乌鲁木齐 水磨沟区', 87.607, 43.815, 0, ['photo', 'nightlife']),
+    ];
+  }
   if (/昆山|昆山区|昆山市|苏州昆山/.test(raw)) {
     return [
       localFallbackPoi('fallback-kunshan-museum', '昆山博物馆', 'culture', '昆山 昆山市', 120.974, 31.386, 28, ['cultural']),
@@ -177,10 +244,18 @@ function fallbackPoisFor(raw: string): POI[] {
 }
 
 function getAmapCityName(city: string, raw: string): string {
+  if (/新疆/.test(raw) && !/喀什|伊犁|伊宁|吐鲁番|阿勒泰|乌鲁木齐|乌市/.test(raw)) return '乌鲁木齐';
+  if (/乌市/.test(raw)) return '乌鲁木齐';
+  if (/伊宁/.test(raw)) return '伊犁';
   return KNOWN_CITY_NAMES.find((name) => city.includes(name) || raw.includes(name)) ?? city.split('/')[0] ?? '上海';
 }
 
 function getAreaKeyword(raw: string, city: string): string {
+  if (/喀什/.test(raw)) return '喀什古城';
+  if (/伊犁|伊宁/.test(raw)) return '伊宁';
+  if (/吐鲁番/.test(raw)) return /葡萄沟/.test(raw) ? '葡萄沟' : '吐鲁番';
+  if (/阿勒泰/.test(raw)) return '阿勒泰';
+  if (/新疆|乌鲁木齐|乌市/.test(raw)) return /大巴扎/.test(raw) ? '大巴扎' : '';
   if (/昆山|昆山区|昆山市|苏州昆山/.test(raw)) return '昆山 昆山市';
   if (/虎丘区|虎丘景区|虎丘|苏州高新区|高新区/.test(raw)) return '虎丘区 虎丘景区 苏州高新区';
   if (/苏州/.test(raw) && /工业园区|园区|金鸡湖|东方之门|诚品/.test(raw)) return '苏州工业园区 金鸡湖';
@@ -222,6 +297,13 @@ function allowsTwoMeals(raw: string): boolean {
 
 function queryKeywords(raw: string): string[] {
   const words = new Set<string>();
+  if (/新疆|乌鲁木齐|乌市/.test(raw)) {
+    ['新疆博物馆', '新疆国际大巴扎', '红山公园', '新疆菜'].forEach((word) => words.add(word));
+  }
+  if (/喀什/.test(raw)) ['喀什古城', '喀什博物馆', '新疆菜'].forEach((word) => words.add(word));
+  if (/伊犁|伊宁/.test(raw)) ['伊宁六星街', '伊犁博物馆', '新疆菜'].forEach((word) => words.add(word));
+  if (/吐鲁番/.test(raw)) ['吐鲁番博物馆', '葡萄沟', '新疆菜'].forEach((word) => words.add(word));
+  if (/阿勒泰/.test(raw)) ['阿勒泰博物馆', '桦林公园', '新疆菜'].forEach((word) => words.add(word));
   if (wantsMeal(raw)) {
     words.add('美食');
     words.add('餐厅');
@@ -230,12 +312,18 @@ function queryKeywords(raw: string): string[] {
     if (/虎丘|高新区/.test(raw)) words.add('虎丘餐厅');
     if (/苏州|金鸡湖|园区/.test(raw)) words.add('苏州菜');
     if (/杭州|西湖/.test(raw)) words.add('杭帮菜');
+    if (/新疆|乌鲁木齐|乌市|喀什|伊犁|伊宁|吐鲁番|阿勒泰/.test(raw)) ['新疆菜', '中餐厅'].forEach((word) => words.add(word));
   }
   if (hasCultureWalkIntent(raw)) {
     ['园林', '博物馆', '文化景点', '公园'].forEach((word) => words.add(word));
     if (/自然风光|自然/.test(raw)) words.add('自然风光');
     if (/昆山/.test(raw)) ['昆山博物馆', '亭林园', '森林公园'].forEach((word) => words.add(word));
     if (/虎丘|高新区/.test(raw)) ['虎丘景区', '虎丘公园', '苏州高新区博物馆'].forEach((word) => words.add(word));
+    if (/新疆|乌鲁木齐|乌市/.test(raw)) ['新疆博物馆', '红山公园', '大巴扎'].forEach((word) => words.add(word));
+    if (/喀什/.test(raw)) ['喀什古城', '喀什博物馆'].forEach((word) => words.add(word));
+    if (/伊犁|伊宁/.test(raw)) ['伊宁六星街', '伊犁博物馆'].forEach((word) => words.add(word));
+    if (/吐鲁番/.test(raw)) ['吐鲁番博物馆', '葡萄沟'].forEach((word) => words.add(word));
+    if (/阿勒泰/.test(raw)) ['阿勒泰博物馆', '桦林公园'].forEach((word) => words.add(word));
     words.add('咖啡');
   }
   if (/咖啡|茶|下午茶|接电话|安静|轻松|坐/.test(raw)) words.add('咖啡');
@@ -261,7 +349,7 @@ function inferCategory(name: string, type = ''): Category {
   if (/咖啡|茶饮|奶茶|甜品|饮品|面包|烘焙|下午茶/.test(text)) return 'cafe';
   if (/餐饮|美食|中餐|西餐|火锅|烧烤|小吃|面馆|饭店|酒楼|餐厅|菜馆|食府/.test(text)) return 'dining';
   if (/购物|商场|百货|奥特莱斯|市场|商业|超市|综合体/.test(text)) return 'shopping';
-  if (/博物馆|博物院|美术馆|展览|展馆|图书馆|书店|文化|景点|名胜|古迹|园林|园区|公园|广场|风景|寺|古城|古镇|街区|遗址|纪念馆|艺术馆/.test(text)) return 'culture';
+  if (/博物馆|博物院|美术馆|展览|展馆|图书馆|书店|文化|景点|名胜|古迹|园林|园区|公园|广场|风景|寺|古城|古镇|街区|遗址|纪念馆|艺术馆|大巴扎|草原|峡谷|雪山|森林|湿地|葡萄沟/.test(text)) return 'culture';
   if (/影院|剧场|KTV|桌游|密室|娱乐|游乐|Live|live|酒吧|运动|健身|电玩|舞厅/.test(text)) return 'entertainment';
   if (/夜景|酒吧|江景|湖景|观景|夜游|灯光/.test(text)) return 'nightscape';
   return 'culture';
@@ -273,8 +361,8 @@ function tagsFor(category: Category, raw: string, name: string, type = ''): Scen
   if (/安静|接电话|咖啡|茶/.test(text)) tags.add('quiet');
   if (/朋友|热闹|娱乐|聚会|商场/.test(text)) tags.add('lively');
   if (/拍照|出片|公园|景点|风景|古城|遗址|湖|江/.test(text)) tags.add('photo');
-  if (/文艺|文化|博物馆|博物院|美术馆|书店|历史|园林|古城|古镇|街区|遗址/.test(text)) tags.add('cultural');
-  if (/园林|公园|湖|江|绿地|湿地/.test(text)) tags.add('nature');
+  if (/文艺|文化|博物馆|博物院|美术馆|书店|历史|园林|古城|古镇|街区|遗址|大巴扎/.test(text)) tags.add('cultural');
+  if (/园林|公园|湖|江|绿地|湿地|森林|草原|峡谷|雪山|葡萄沟/.test(text)) tags.add('nature');
   if (/亲子|儿童|乐园/.test(text)) tags.add('family');
   if (/酒吧|夜景|夜游/.test(text)) tags.add('nightlife');
   if (/便宜|实惠|预算|小吃/.test(text)) tags.add('budget');
@@ -441,7 +529,7 @@ function rescueRequiredAmapPois(strictPois: POI[], areaFiltered: POI[], constrai
 function cultureKindOfPoi(poi: POI): 'museum' | 'garden' | 'other' {
   const text = `${poi.name} ${poi.ugc}`;
   if (/博物馆|博物院|展馆|展览|美术馆|纪念馆|展示馆/.test(text)) return 'museum';
-  if (/园林|公园|景区|风景|西湖|湖|古镇|街区|自然|森林|湿地|山/.test(text)) return 'garden';
+  if (/园林|公园|景区|风景|西湖|湖|古镇|古城|街区|自然|森林|湿地|山|草原|峡谷|雪山|葡萄沟|大巴扎/.test(text)) return 'garden';
   return 'other';
 }
 
@@ -471,7 +559,7 @@ function coreCultureMatch(item: ScoredPOI | POI): boolean {
   const text = `${poi.name} ${poi.ugc}`;
   if (poi.category !== 'culture') return false;
   if (/国际博览中心|博览中心|会展中心|会议中心/.test(text)) return false;
-  return /园林|博物馆|博物院|美术馆|展馆|展览馆|展示馆|纪念馆|文化馆|艺术馆|公园|景区|风景|自然|森林|湿地|湖|山|古镇|亭林|虎丘|周庄/.test(text);
+  return /园林|博物馆|博物院|美术馆|展馆|展览馆|展示馆|纪念馆|文化馆|艺术馆|公园|景区|风景|自然|森林|湿地|湖|山|古镇|古城|亭林|虎丘|周庄|大巴扎|草原|峡谷|雪山|葡萄沟/.test(text);
 }
 
 function coreCultureCount(route: Route): number {

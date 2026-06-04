@@ -71,6 +71,16 @@ const INTENT_RULES: IntentRule[] = [
     reason: '用户要求减少车程/距离，属于压缩移动时间',
   },
   {
+    intent: 'avoidFoodOrDrink',
+    patterns: [
+      /(?:不要|不想|别|不喝|少喝).{0,8}(?:咖啡|奶茶|茶饮|喝茶|饮品|下午茶)/,
+      /(?:咖啡|奶茶|茶饮|喝茶|饮品|下午茶).{0,8}(?:不要|不想|别|不喝|少喝)/,
+    ],
+    confidence: 0.93,
+    reason: '用户明确要求避开饮品或咖啡休息点，不能解析成新增咖啡',
+    slotHints: (raw) => ({ category: extractDrinkCategory(raw) }),
+  },
+  {
     intent: 'addFoodOrDrink',
     patterns: [/想喝奶茶|加.*奶茶|奶茶/, /想喝咖啡|加.*咖啡|咖啡/, /想喝茶|茶饮|甜品|下午茶|喝点/],
     confidence: 0.9,
@@ -86,9 +96,17 @@ const INTENT_RULES: IntentRule[] = [
   },
   {
     intent: 'addStop',
-    patterns: [/多逛几个地方|多逛|多玩|再加点|多安排|再来一个地方|加一个地方|不够逛/],
+    patterns: [
+      /多逛几个地方|多逛|多玩|再加点|多安排|再来一个地方|加一个地方|不够逛/,
+      /再(?:多)?逛[一二两三四五六七八九\d]+\s*(?:个|处)?地方?/,
+      /(?:加|增加|多安排)[一二两三四五六七八九\d]+\s*(?:个|处)?地方/,
+    ],
     confidence: 0.86,
     reason: '用户想增加站点，需要在剩余时间内补一个近距离 POI',
+    slotHints: (raw) => ({
+      stopCount: extractStopCount(raw),
+      preferWalk: /多走走路|多走路|走走路|步行|散步/.test(raw),
+    }),
   },
   {
     intent: 'makeQuiet',
@@ -137,6 +155,12 @@ function extractDrinkCategory(raw: string): string {
   return '咖啡/茶饮';
 }
 
+function extractStopCount(raw: string): number {
+  if (/两个|两处|两地|二个|二处|2\s*个|2\s*处|再(?:多)?逛两|再(?:多)?逛二|加两|加二/.test(raw)) return 2;
+  if (/三个|三处|三地|3\s*个|3\s*处|再(?:多)?逛三|加三/.test(raw)) return 3;
+  return 1;
+}
+
 function targetStopLabel(raw: string): string | undefined {
   return raw.match(/第[一二三四五六123456]站/)?.[0];
 }
@@ -144,7 +168,7 @@ function targetStopLabel(raw: string): string | undefined {
 function normalizeIntent(candidate: Partial<RefineIntentJSON> | null, source: RefineIntentJSON['source']): RefineIntentJSON | null {
   if (!candidate || !candidate.primaryIntent) return null;
   const allowed: RefinePrimaryIntent[] = [
-    'reduceTravel', 'addStop', 'addFoodOrDrink', 'replaceFood', 'lowerBudget',
+    'reduceTravel', 'addStop', 'addFoodOrDrink', 'avoidFoodOrDrink', 'replaceFood', 'lowerBudget',
     'makeQuiet', 'makePhotoFriendly', 'changeArea', 'unknown',
   ];
   if (!allowed.includes(candidate.primaryIntent)) return null;
@@ -196,6 +220,7 @@ async function resolveIntentWithLLM(input: RefineAgentInput): Promise<RefineInte
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
+        request: input.originalRequest ?? input.constraints.raw,
         originalRequest: input.originalRequest ?? input.constraints.raw,
         refineText: input.rawInput,
         route: input.currentRoute.stops.map((stop, idx) => ({
@@ -320,6 +345,116 @@ function addNearbyStop(
     }
   }
   return { route, changed: [], executed: false, message: '已尝试搜索附近候选，但当前时间窗口或移动距离不适合再增加站点。' };
+}
+
+function addNearbyStops(
+  route: Route,
+  c: Constraints,
+  persona: Persona,
+  candidates: ScoredPOI[],
+  count: number,
+  filter: (candidate: ScoredPOI) => boolean,
+): { route: Route; changed: string[]; executed: boolean; message: string } {
+  let current = route;
+  const changed: string[] = [];
+  const target = Math.max(1, Math.min(count, 5 - route.stops.length));
+  for (let i = 0; i < target; i += 1) {
+    const result = addNearbyStop(current, c, persona, candidates, filter);
+    if (!result.executed) break;
+    current = result.route;
+    changed.push(...result.changed);
+  }
+  if (!changed.length) {
+    return {
+      route,
+      changed: [],
+      executed: false,
+      message: '已尝试搜索附近候选，但当前时间窗口或移动距离不适合再增加站点。',
+    };
+  }
+  const names = changed
+    .map((id) => current.stops.find((stop) => stop.scored.poi.id === id)?.scored.poi.name)
+    .filter(Boolean);
+  const suffix = changed.length < count ? '；再多加会把时间或移动距离排得过满' : '';
+  return {
+    route: current,
+    changed,
+    executed: true,
+    message: `已加入 ${changed.length} 个近距离游览点：${names.map((name) => `「${name}」`).join('、')}${suffix}。`,
+  };
+}
+
+function avoidDrinkStop(
+  route: Route,
+  c: Constraints,
+  persona: Persona,
+  candidates: ScoredPOI[],
+  category?: string,
+): { route: Route; changed: string[]; executed: boolean; message: string; constraints: Constraints } {
+  const cons: Constraints = {
+    ...c,
+    avoidCategories: [...new Set([...c.avoidCategories, 'cafe' as Category])],
+  };
+  const picks = route.stops.map((stop) => stop.scored);
+  const targetIdx = picks.findIndex((pick) => pick.poi.category === 'cafe' && drinkKeywordMatch(pick, category));
+  if (targetIdx < 0) {
+    return {
+      route,
+      changed: [],
+      executed: true,
+      constraints: cons,
+      message: `当前路线没有安排${category ?? '咖啡/茶饮'}点，后续会避开这类休息点。`,
+    };
+  }
+
+  const target = picks[targetIdx];
+  const used = new Set(picks.map((pick) => pick.poi.id));
+  const replacement = candidates
+    .filter((candidate) =>
+      !used.has(candidate.poi.id)
+      && candidate.poi.category !== 'cafe'
+      && candidate.poi.category !== 'dining'
+      && candidate.poi.category !== 'nightscape'
+      && nearestToRouteM(candidate, route) <= 2600)
+    .sort((a, b) =>
+      nearestToRouteM(a, route) - nearestToRouteM(b, route)
+      || b.score - a.score)[0];
+
+  if (replacement) {
+    const nextPicks = [...picks];
+    nextPicks[targetIdx] = replacement;
+    const next = safeCandidateRoute(nextPicks, cons, persona, 0);
+    if (next) {
+      return {
+        route: next,
+        changed: [replacement.poi.id],
+        executed: true,
+        constraints: cons,
+        message: `已避开「${target.poi.name}」，换成不含咖啡/茶饮的「${replacement.poi.name}」。`,
+      };
+    }
+  }
+
+  if (canDrop(picks, targetIdx, cons)) {
+    const next = safeCandidateRoute(picks.filter((_, idx) => idx !== targetIdx), cons, persona, 0);
+    if (next) {
+      return {
+        route: next,
+        changed: [],
+        executed: true,
+        constraints: cons,
+        message: `已移除「${target.poi.name}」，不再安排咖啡/茶饮休息点。`,
+      };
+    }
+  }
+
+  return {
+    route,
+    changed: [],
+    executed: false,
+    constraints: cons,
+    message: `已理解为避开${category ?? '咖啡/茶饮'}，但当前删换会破坏时间/距离闸门，先保留安全路线。`,
+  };
 }
 
 function replaceWithQuiet(
@@ -478,8 +613,9 @@ function ensureSafeRoute(
 function prefixMessage(intent: RefineIntentJSON, body: string): string {
   const label: Record<RefinePrimaryIntent, string> = {
     reduceTravel: '你想减少车程',
-    addStop: '你想多逛一个地方',
+    addStop: `你想多逛${intent.slots.stopCount && intent.slots.stopCount > 1 ? `${intent.slots.stopCount}个` : '一个'}地方`,
     addFoodOrDrink: `你想加${intent.slots.category ?? '饮品'}休息点`,
+    avoidFoodOrDrink: `你想避开${intent.slots.category ?? '饮品'}休息点`,
     replaceFood: '你想换餐厅',
     lowerBudget: '你想降低预算',
     makeQuiet: '你想安静一点',
@@ -511,8 +647,16 @@ export async function runRefineAgent(input: RefineAgentInput): Promise<RefineAge
     tool = 'replan.reduceTravel';
     body = result.message;
   } else if (intent.primaryIntent === 'addStop') {
-    const result = addNearbyStop(route, constraints, input.persona, input.candidates, (candidate) =>
-      candidate.poi.category !== 'dining' && candidate.poi.category !== 'nightscape');
+    const count = intent.slots.stopCount ?? 1;
+    const preferWalkingStops = Boolean(intent.slots.preferWalk);
+    let result = addNearbyStops(route, constraints, input.persona, input.candidates, count, (candidate) =>
+      candidate.poi.category !== 'dining'
+      && candidate.poi.category !== 'nightscape'
+      && (!preferWalkingStops || candidate.poi.category !== 'cafe'));
+    if (!result.executed && preferWalkingStops) {
+      result = addNearbyStops(route, constraints, input.persona, input.candidates, count, (candidate) =>
+        candidate.poi.category !== 'dining' && candidate.poi.category !== 'nightscape');
+    }
     route = result.route;
     changed = result.changed;
     executed = result.executed;
@@ -536,6 +680,14 @@ export async function runRefineAgent(input: RefineAgentInput): Promise<RefineAge
         ? result.message
         : `已尝试搜索附近${intent.slots.category ?? '茶饮/咖啡'}，但候选不足或加入后会超出时间/移动闸门，先不增加站点。`;
     }
+  } else if (intent.primaryIntent === 'avoidFoodOrDrink') {
+    const result = avoidDrinkStop(route, constraints, input.persona, input.candidates, intent.slots.category);
+    route = result.route;
+    constraints = result.constraints;
+    changed = result.changed;
+    executed = result.executed;
+    tool = 'replan.avoidDrink';
+    body = result.message;
   } else if (intent.primaryIntent === 'replaceFood') {
     const result = applyRefine({ kind: 'replaceCategory', category: 'dining', criterion: 'higherRating', raw: input.rawInput, note: intent.reason }, route, constraints, input.persona, input.candidates);
     route = result.route;

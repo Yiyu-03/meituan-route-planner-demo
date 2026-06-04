@@ -70,7 +70,7 @@ export default async function handler(req, res) {
   if (!refineText) return send(res, 400, { status: 'bad_request', message: 'refineText is required' });
 
   const route = Array.isArray(body.route) ? body.route.slice(0, 6) : [];
-  const originalRequest = String(body.originalRequest || '').slice(0, 300);
+  const originalRequest = String(body.originalRequest || body.request || '').slice(0, 300);
   const model = process.env.AGENT_LLM_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
   const system = [

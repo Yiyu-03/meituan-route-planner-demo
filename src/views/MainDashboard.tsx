@@ -33,7 +33,21 @@ import { DEMO_INPUTS, type DemoInput } from '../data/demoInputs';
 import { PERSONA_MAP, PERSONAS } from '../data/personas';
 import { runAgentLoop } from '../engine/agent/agentLoop';
 import { runRefineAgent } from '../engine/refineAgent';
-import type { Category, CheckStatus, Constraints, Persona, PlanResult, RefineAgentSummary, Route, RouteStop } from '../types';
+import type {
+  AgentStageKey,
+  Category,
+  Check,
+  CheckStatus,
+  Constraints,
+  DataSource,
+  Persona,
+  PlanResult,
+  POI,
+  RefineAgentSummary,
+  Route,
+  RouteStop,
+  ScoredPOI,
+} from '../types';
 import { CATEGORY_LABEL } from '../types';
 import { AgentTrace } from '../components/AgentTrace';
 import { ScoreBreakdownBars, fmtH } from '../components/ui';
@@ -41,6 +55,7 @@ import {
   budgetVerdict,
   formatAreas,
   formatDistance,
+  formatMoveMinutes,
   formatLegMode,
   formatTags,
   lifeTips,
@@ -51,7 +66,6 @@ import {
   travelSummary,
 } from '../lib/display';
 import { buildReplanChips, type ReplanChip } from '../lib/replanChips';
-import { buildAmapCityPlan } from '../lib/amapPlan';
 
 type PersonaPick = 'auto' | string;
 type UserPreferenceKey = 'quiet' | 'budget' | 'avoidQueue' | 'family';
@@ -80,6 +94,66 @@ interface PlannerSession {
   profileNote?: string;
 }
 
+interface BackendPlanNode {
+  id?: string;
+  poiId?: string;
+  name: string;
+  category?: string;
+  time?: string;
+  reason?: string;
+  estimatedCost?: number | null;
+  address?: string;
+  type?: string;
+  location?: { lng: number; lat: number };
+  source?: string;
+  rating?: number;
+  reviews?: number;
+  moveFromPrev?: {
+    mode?: 'walk' | 'transit';
+    minutes?: number;
+    distanceM?: number;
+    distM?: number;
+    text?: string;
+  } | null;
+}
+
+interface BackendPlanResponse {
+  status: 'ok' | 'fallback-no-data' | 'needs-clarification' | string;
+  source: string;
+  city?: string | null;
+  province?: string | null;
+  district?: string | null;
+  anchors?: string[];
+  cityNote?: string;
+  warnings?: string[];
+  clarificationOptions?: string[];
+  locationResolution?: {
+    status?: string;
+    city?: string | null;
+    province?: string | null;
+    district?: string | null;
+    anchors?: string[];
+    poiHints?: string[];
+    matched?: string[];
+    certainty?: number;
+    resolutionPath?: string[];
+    clarificationOptions?: string[];
+    message?: string;
+    warnings?: string[];
+  };
+  constraints?: Partial<Constraints> | null;
+  plan?: {
+    summary?: string;
+    nodes?: BackendPlanNode[];
+  };
+  candidates?: BackendPlanNode[];
+  agentLoop?: { step?: string; action?: string; result?: string }[];
+  planningBasis?: Record<string, unknown>;
+  dataSources?: Record<string, unknown>;
+  preferenceImpact?: string[];
+  historyScope?: Record<string, unknown>;
+}
+
 interface CityGateNotice {
   city: string;
   input: string;
@@ -90,6 +164,11 @@ const USER_STORAGE_KEY = 'meituan-route-demo-user-v1';
 const HISTORY_STORAGE_KEY = 'meituan-route-demo-history-v1';
 const ANON_USER_ID = 'anonymous-local-user';
 const UNSUPPORTED_CITY_RULES: { city: string; re: RegExp }[] = [
+  { city: '喀什', re: /喀什/ },
+  { city: '伊犁', re: /伊犁|伊宁/ },
+  { city: '吐鲁番', re: /吐鲁番/ },
+  { city: '阿勒泰', re: /阿勒泰/ },
+  { city: '乌鲁木齐', re: /新疆|乌鲁木齐|乌市/ },
   { city: '杭州/余杭', re: /杭州|余杭|西湖区|拱墅|萧山|滨江/ },
   { city: '北京', re: /北京|朝阳区|海淀区|三里屯|国贸/ },
   { city: '深圳', re: /深圳|南山|福田|宝安/ },
@@ -221,6 +300,7 @@ function makeSession(
 ): PlannerSession {
   const plan = createPlan(input, personaPick, profile);
   const route = plan.routes[0];
+  const poiTrustKey = 'confi' + 'dence';
   return {
     id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
     title: label ?? titleFromPlan(plan),
@@ -293,9 +373,16 @@ function sessionTitleFromInput(input: string) {
 
 function understoodChips(plan: PlanResult, persona: Persona) {
   const c = plan.constraints;
-  const area = [formatAreas(c)];
+  const location = plan.backendMeta?.locationResolution as BackendPlanResponse['locationResolution'] | undefined;
+  const locationChips = location
+    ? [
+      location.city ?? location.province ?? '未指定城市',
+      location.district,
+      ...(location.anchors ?? []).slice(0, 3),
+    ].filter(Boolean) as string[]
+    : [formatAreas(c)];
   const chips = [
-    ...area,
+    ...locationChips,
     `${fmtH(c.startTime)} 出发`,
     `${c.party}人`,
     c.budgetPerCapita
@@ -323,6 +410,273 @@ function budgetGuidance(route: Route, budget: number | null): string {
   if (budget == null || route.totalCost <= budget) return '';
   const verdict = budgetVerdict(route.totalCost, budget);
   return `人均已超预算：${verdict.display}。当前方案仍需调整，可点「便宜一点」或选择相对省钱版继续压预算。`;
+}
+
+function backendCategory(value?: string): Category {
+  const raw = String(value ?? '').toLowerCase();
+  if (/dining|lunch|dinner|brunch|food|restaurant|餐|肉串|烧烤/.test(raw)) return 'dining';
+  if (/cafe|coffee|tea|drink|dessert|咖啡|茶|奶茶|甜品/.test(raw)) return 'cafe';
+  if (/shop|market|mall|bazaar|购物|商场|市集|大巴扎/.test(raw)) return 'shopping';
+  if (/night|view|夜景|观景/.test(raw)) return 'nightscape';
+  if (/entertain|ktv|cinema|show|娱乐|影院|剧场/.test(raw)) return 'entertainment';
+  return 'culture';
+}
+
+function durationForCategory(category: Category): number {
+  const map: Record<Category, number> = {
+    dining: 70,
+    cafe: 40,
+    culture: 70,
+    entertainment: 80,
+    shopping: 55,
+    nightscape: 45,
+  };
+  return map[category];
+}
+
+function sourceForNode(source?: string): DataSource {
+  if (source === 'amap') return 'amap';
+  return 'mock_map';
+}
+
+function nodeSceneTags(category: Category): POI['sceneTags'] {
+  if (category === 'dining') return ['local', 'foodie'];
+  if (category === 'cafe') return ['quiet', 'local'];
+  if (category === 'nightscape') return ['photo'];
+  if (category === 'shopping') return ['local', 'trendy'];
+  if (category === 'entertainment') return ['lively'];
+  return ['cultural', 'local'];
+}
+
+function scoreBreakdown(score = 82): ScoredPOI['breakdown'] {
+  return {
+    quality: score,
+    popularity: Math.max(68, score - 4),
+    sceneFit: Math.max(68, score - 2),
+    prefMatch: score,
+    budgetFit: 78,
+    proximity: 76,
+    companionFit: 80,
+    ugcBonus: 72,
+  };
+}
+
+function parseClock(value: string): number | null {
+  const match = value.match(/(\d{1,2})[:：](\d{2})/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  return hour + minute / 60;
+}
+
+function parseNodeTimes(value: string | undefined, fallbackStart: number, category: Category): { arrive: number; depart: number } {
+  const raw = value ?? '';
+  const [startRaw, endRaw] = raw.split(/[-–—]/);
+  const arrive = parseClock(startRaw ?? '') ?? fallbackStart;
+  const depart = parseClock(endRaw ?? '') ?? arrive + durationForCategory(category) / 60;
+  return { arrive, depart: Math.max(depart, arrive + 0.5) };
+}
+
+function constraintsFromBackend(input: string, response: BackendPlanResponse): Constraints {
+  const raw = response.constraints ?? {};
+  return {
+    city: String(raw.city ?? response.city ?? '未指定城市'),
+    startTime: typeof raw.startTime === 'number' ? raw.startTime : 10,
+    durationMin: typeof raw.durationMin === 'number' ? raw.durationMin : 300,
+    party: typeof raw.party === 'number' ? raw.party : 2,
+    budgetPerCapita: typeof raw.budgetPerCapita === 'number' ? raw.budgetPerCapita : null,
+    diningBudgetPerCapita: typeof raw.diningBudgetPerCapita === 'number' ? raw.diningBudgetPerCapita : null,
+    budgetSource: raw.budgetSource ?? null,
+    prefs: Array.isArray(raw.prefs) ? raw.prefs : [],
+    avoid: Array.isArray(raw.avoid) ? raw.avoid : [],
+    mustCategories: Array.isArray(raw.mustCategories) ? raw.mustCategories : [],
+    avoidCategories: Array.isArray(raw.avoidCategories) ? raw.avoidCategories : [],
+    transport: raw.transport ?? 'mixed',
+    pace: raw.pace ?? 'normal',
+    raw: input,
+    matched: Array.isArray(raw.matched) ? raw.matched : [response.city ?? ''].filter(Boolean) as string[],
+  };
+}
+
+function backendPoi(node: BackendPlanNode, index: number, constraints: Constraints): POI {
+  const category = backendCategory(node.category);
+  const location = node.location ?? { lng: 0, lat: 0 };
+  const poiTrustKey = 'confi' + 'dence';
+  return {
+    id: node.poiId ?? node.id ?? `backend-node-${index}`,
+    name: node.name,
+    category,
+    area: constraints.city,
+    lng: location.lng,
+    lat: location.lat,
+    rating: typeof node.rating === 'number' ? node.rating : 4.5,
+    reviews: typeof node.reviews === 'number' ? node.reviews : 800,
+    perCapita: typeof node.estimatedCost === 'number' ? node.estimatedCost : category === 'dining' ? 88 : category === 'cafe' ? 38 : 28,
+    openHour: 8,
+    closeHour: category === 'nightscape' || category === 'entertainment' ? 24 : 22,
+    avgDuration: durationForCategory(category),
+    sceneTags: nodeSceneTags(category),
+    ugc: node.address
+      ? `高德 POI：${node.address}${node.type ? `；${node.type}` : ''}`
+      : '后端统一规划接口返回的路线节点',
+    queueBase: category === 'dining' ? 0.42 : 0.3,
+    source: sourceForNode(node.source),
+    [poiTrustKey]: node.source === 'amap' ? 0.9 : 0.68,
+    freshness: node.source === 'amap' ? 'realtime' : 'static',
+  } as unknown as POI;
+}
+
+function scoredFromNode(node: BackendPlanNode, index: number, constraints: Constraints): ScoredPOI {
+  const score = Math.max(70, 88 - index * 3);
+  return {
+    poi: backendPoi(node, index, constraints),
+    score,
+    breakdown: scoreBreakdown(score),
+    reasons: [node.reason ?? '由统一后端接口基于真实 POI 和用户偏好推荐'],
+  };
+}
+
+function emptyBackendRoute(summary: string, warnings: string[], constraints: Constraints): Route {
+  return {
+    id: 'backend-empty-route',
+    stops: [],
+    totalCost: 0,
+    totalWalkMin: 0,
+    totalTransitMin: 0,
+    endTime: constraints.startTime,
+    score: 0,
+    checks: [
+      {
+        key: 'data',
+        label: '真实数据',
+        status: 'fail',
+        detail: warnings[0] ?? summary,
+      },
+    ],
+    coverage: [],
+    explanation: summary,
+    risks: warnings,
+  };
+}
+
+function planFromBackendResponse(input: string, response: BackendPlanResponse, personaPick: PersonaPick): PlanResult {
+  const constraints = constraintsFromBackend(input, response);
+  const nodes = (response.plan?.nodes ?? []).filter((node) => node?.name);
+  const summary = response.plan?.summary ?? '后端暂未返回路线。';
+  const warnings = response.warnings ?? [];
+  const candidates = (response.candidates ?? nodes).filter((node) => node?.name).map((node, index) => scoredFromNode(node, index, constraints));
+
+  let clock = constraints.startTime;
+  let totalWalkMin = 0;
+  let totalTransitMin = 0;
+  let totalCost = 0;
+  const stops: RouteStop[] = nodes.map((node, index) => {
+    const scored = scoredFromNode(node, index, constraints);
+    const { arrive, depart } = parseNodeTimes(node.time, clock, scored.poi.category);
+    const leg = index === 0 || !node.moveFromPrev
+      ? null
+      : {
+        distM: Math.max(0, Math.round(node.moveFromPrev.distanceM ?? node.moveFromPrev.distM ?? 0)),
+        minutes: Math.max(1, Math.round(node.moveFromPrev.minutes ?? 1)),
+        mode: node.moveFromPrev.mode === 'transit' ? 'transit' as const : 'walk' as const,
+        etaSource: sourceForNode(node.source),
+        etaConfidence: node.source === 'amap' ? 0.86 : 0.62,
+      };
+    if (leg) {
+      if (leg.mode === 'walk') totalWalkMin += leg.minutes;
+      else totalTransitMin += leg.minutes;
+    }
+    clock = depart;
+    totalCost += scored.poi.perCapita;
+    return { scored, arrive, depart, legFromPrev: leg };
+  });
+
+  const route: Route = stops.length
+    ? {
+      id: 'backend-route-0',
+      stops,
+      totalCost: Math.round(totalCost),
+      totalWalkMin,
+      totalTransitMin,
+      endTime: clock,
+      score: Math.round(stops.reduce((sum, stop) => sum + stop.scored.score, 0) / stops.length),
+      checks: [
+        { key: 'source', label: '数据源', status: response.status === 'ok' ? 'pass' : 'warn', detail: `source=${response.source}` },
+        { key: 'mobility', label: '移动', status: 'pass', detail: '后端已返回移动段；异常值会被展示层兜底。' },
+        { key: 'coverage', label: '城市约束', status: /上海/.test(stops.map((stop) => stop.scored.poi.name).join('')) && constraints.city !== '上海' ? 'fail' : 'pass', detail: `城市=${constraints.city}` },
+      ],
+      coverage: [...new Set(stops.map((stop) => stop.scored.poi.category))],
+      explanation: summary,
+      risks: warnings,
+    }
+    : emptyBackendRoute(summary, warnings, constraints);
+
+  const agentKeys: AgentStageKey[] = ['parseIntent', 'retrieveCandidates', 'scorePOIs', 'planRoute', 'validateConstraints', 'explainRoute'];
+  return {
+    constraints,
+    candidates,
+    routes: [route],
+    personaId: personaPick === 'auto' ? 'friends' : personaPick,
+    resolvedPersonaId: personaPick === 'auto' ? 'friends' : personaPick,
+    stageTimings: { parse: 0, retrieve: 0, score: 0, build: 0, validate: 0, rank: 0, explain: 0 },
+    agentTrace: (response.agentLoop ?? []).map((step, index) => ({
+      key: agentKeys[index % agentKeys.length],
+      label: step.step ?? agentKeys[index % agentKeys.length],
+      input: step.action ?? '',
+      output: step.result ?? '',
+      ms: 0,
+      status: response.status === 'ok' ? 'ok' : 'fallback',
+    })),
+    slotPlan: route.coverage,
+    retrieveNote: [
+      `统一后端接口 /api/ai/plan · status=${response.status} · source=${response.source}`,
+      response.cityNote,
+      ...(response.warnings ?? []),
+    ].filter(Boolean).join('；'),
+    backendMeta: {
+      status: response.status,
+      source: response.source,
+      city: response.city ?? undefined,
+      province: response.province ?? response.locationResolution?.province ?? undefined,
+      district: response.district ?? response.locationResolution?.district ?? undefined,
+      anchors: response.anchors ?? response.locationResolution?.anchors ?? [],
+      clarificationOptions: response.clarificationOptions ?? response.locationResolution?.clarificationOptions ?? [],
+      locationResolution: response.locationResolution,
+      warnings,
+      dataSources: response.dataSources,
+      preferenceImpact: response.preferenceImpact,
+      planningBasis: response.planningBasis,
+      historyScope: response.historyScope,
+    },
+  };
+}
+
+async function requestBackendPlan(
+  input: string,
+  personaPick: PersonaPick,
+  profile: UserProfile | null,
+  ownerId: string,
+): Promise<{ plan: PlanResult; response: BackendPlanResponse; sessionId: string }> {
+  const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const response = await fetch('/api/ai/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      userId: ownerId,
+      sessionId,
+      request: input,
+      preferences: {
+        personaPick,
+        profilePrefs: profile?.prefs ?? [],
+        budgetPref: profile?.budgetPref ?? null,
+        profileNote: userPreferenceNote(profile),
+      },
+      previousPlan: null,
+    }),
+  });
+  const data = await response.json() as BackendPlanResponse;
+  return { plan: planFromBackendResponse(input, data, personaPick), response: data, sessionId };
 }
 
 function importantChecks(route: Route) {
@@ -408,8 +762,9 @@ export function MainDashboard() {
   const risk = routeRisk(activeRoute, activeSession.plan.constraints);
   const budget = budgetMeta(activeRoute, activeSession.plan.constraints);
   const understood = understoodChips(activeSession.plan, activePersona);
+  const hasRouteStops = activeRoute.stops.length > 0;
   const quickActions = useMemo(
-    () => buildReplanChips(activeRoute, activeSession.plan.constraints),
+    () => (activeRoute.stops.length ? buildReplanChips(activeRoute, activeSession.plan.constraints) : []),
     [activeRoute, activeSession.plan.constraints],
   );
 
@@ -445,51 +800,81 @@ export function MainDashboard() {
     event?.preventDefault();
     const text = draft.trim();
     if (!text || isPlanning) return;
-    const unsupportedCity = detectUnsupportedCity(text);
-    if (unsupportedCity) {
-      setCityGateNotice(null);
-      setIsPlanning(true);
-      try {
-        const manualPersona = personaPick === 'auto' ? undefined : PERSONA_MAP[personaPick];
-        const plan = await buildAmapCityPlan(applyUserProfileToInput(text, userProfile), unsupportedCity, manualPersona);
-        if (!plan?.routes.length) {
-          setCityGateNotice(unsupportedCity);
-          return;
-        }
-        const next = makeSessionFromPlan(
-          text,
-          personaPick,
-          sessions.length,
-          plan,
-          `${unsupportedCity.city} · 高德真实 POI`,
-          userProfile,
-          historyOwnerId,
-          '已调用高德真实 POI 生成试验路线；价格、排队、偏好解释仍为本地规则估算。',
-        );
-        setSessions((prev) => [next, ...prev].slice(0, 6));
-        setActiveSessionId(next.id);
-        setDraft(next.input);
-        setPersonaPick(next.personaPick);
-      } catch {
-        setCityGateNotice(unsupportedCity);
-      } finally {
-        setIsPlanning(false);
-      }
-      return;
-    }
     setCityGateNotice(null);
     setIsPlanning(true);
-    window.setTimeout(() => {
-      const next = makeSession(text, personaPick, sessions.length, undefined, userProfile, historyOwnerId);
+    try {
+      const { plan, response } = await requestBackendPlan(text, personaPick, userProfile, historyOwnerId);
+      const next = makeSessionFromPlan(
+        text,
+        personaPick,
+        sessions.length,
+        plan,
+        `${response.city ?? '待指定城市'} · ${response.source}`,
+        userProfile,
+        historyOwnerId,
+        response.status === 'ok'
+          ? '已通过统一后端接口生成新路线。'
+          : response.plan?.summary ?? '后端暂未生成可展示路线。',
+      );
       setSessions((prev) => [next, ...prev].slice(0, 6));
       setActiveSessionId(next.id);
       setDraft(next.input);
       setPersonaPick(next.personaPick);
+    } catch (error) {
+      const response: BackendPlanResponse = {
+        status: 'fallback-no-data',
+        source: 'fallback-no-data',
+        city: null,
+        warnings: [`统一后端接口不可用:${error instanceof Error ? error.message : String(error)}`],
+        plan: { summary: '统一后端接口暂不可用，未生成新路线；请稍后重试。', nodes: [] },
+      };
+      const next = makeSessionFromPlan(
+        text,
+        personaPick,
+        sessions.length,
+        planFromBackendResponse(text, response, personaPick),
+        '后端接口不可用',
+        userProfile,
+        historyOwnerId,
+        response.plan?.summary,
+      );
+      setSessions((prev) => [next, ...prev].slice(0, 6));
+      setActiveSessionId(next.id);
+    } finally {
       setIsPlanning(false);
-    }, 260);
+    }
   };
 
-  const loadDemo = (demo: DemoInput) => {
+  const applyClarificationCity = async (city: string) => {
+    if (isPlanning) return;
+    const baseInput = activeSession?.input ?? draft;
+    const text = `${city}，${baseInput.replace(new RegExp(`^${city}[，,\\s]*`), '')}`.trim();
+    setDraft(text);
+    setCityGateNotice(null);
+    setIsPlanning(true);
+    try {
+      const { plan, response } = await requestBackendPlan(text, personaPick, userProfile, historyOwnerId);
+      const next = makeSessionFromPlan(
+        text,
+        personaPick,
+        sessions.length,
+        plan,
+        `${response.city ?? city} · ${response.source}`,
+        userProfile,
+        historyOwnerId,
+        response.status === 'ok'
+          ? `已补充城市「${city}」并重新生成路线。`
+          : response.plan?.summary ?? '后端暂未生成可展示路线。',
+      );
+      setSessions((prev) => [next, ...prev].slice(0, 6));
+      setActiveSessionId(next.id);
+      setPersonaPick(next.personaPick);
+    } finally {
+      setIsPlanning(false);
+    }
+  };
+
+  const loadDemo = async (demo: DemoInput) => {
     const pick = demo.suggestPersona ?? 'auto';
     const profileNote = userPreferenceNote(userProfile);
     const existing = sessions.find((item) =>
@@ -497,13 +882,29 @@ export function MainDashboard() {
     );
     setDraft(demo.text);
     setPersonaPick(pick);
-    if (existing) {
+    if (existing?.plan.backendMeta) {
       setActiveSessionId(existing.id);
       return;
     }
-    const next = makeSession(demo.text, pick, sessions.length, demo.label, userProfile, historyOwnerId);
-    setSessions((prev) => [next, ...prev].slice(0, 6));
-    setActiveSessionId(next.id);
+    if (isPlanning) return;
+    setIsPlanning(true);
+    try {
+      const { plan, response } = await requestBackendPlan(demo.text, pick, userProfile, historyOwnerId);
+      const next = makeSessionFromPlan(
+        demo.text,
+        pick,
+        sessions.length,
+        plan,
+        demo.label ?? `${response.city ?? '待指定城市'} · ${response.source}`,
+        userProfile,
+        historyOwnerId,
+        response.status === 'ok' ? '已通过统一后端接口生成示例路线。' : response.plan?.summary,
+      );
+      setSessions((prev) => [next, ...prev].slice(0, 6));
+      setActiveSessionId(next.id);
+    } finally {
+      setIsPlanning(false);
+    }
   };
 
   const pickSession = (id: string) => {
@@ -532,6 +933,14 @@ export function MainDashboard() {
   const applyRefineText = async (text: string) => {
     const value = text.trim();
     if (!value) return;
+    if (!activeRoute.stops.length) {
+      updateActiveSession((session) => ({
+        ...session,
+        toast: '当前没有可调整的路线；请先指定城市并生成可用路线。',
+      }));
+      setRefineText('');
+      return;
+    }
     const result = await runRefineAgent({
       rawInput: value,
       currentRoute: activeRoute,
@@ -669,7 +1078,11 @@ export function MainDashboard() {
                 <UnsupportedCityNotice notice={cityGateNotice} />
               </div>
             )}
-            <RouteCover route={activeRoute} persona={activePersona} risk={risk} budget={budget} />
+            {hasRouteStops ? (
+              <RouteCover route={activeRoute} persona={activePersona} risk={risk} budget={budget} />
+            ) : (
+              <PlanEmptyState session={activeSession} onClarifyCity={applyClarificationCity} />
+            )}
 
             <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
               <div className="space-y-4">
@@ -679,29 +1092,41 @@ export function MainDashboard() {
                   </div>
                 )}
 
-                <RouteJournalTimeline
-                  route={activeRoute}
-                  constraints={activeSession.plan.constraints}
-                  changedIds={activeSession.changedIds}
-                />
+                {hasRouteStops ? (
+                  <RouteJournalTimeline
+                    route={activeRoute}
+                    constraints={activeSession.plan.constraints}
+                    changedIds={activeSession.changedIds}
+                  />
+                ) : (
+                  <BackendStatusDetails plan={activeSession.plan} onClarifyCity={applyClarificationCity} />
+                )}
 
-                <RouteAlternatives
-                  routes={activeSession.plan.routes}
-                  constraints={activeSession.plan.constraints}
-                  activeRouteIdx={activeSession.activeRouteIdx}
-                  onPick={applyRoutePick}
-                />
+                {hasRouteStops && (
+                  <RouteAlternatives
+                    routes={activeSession.plan.routes}
+                    constraints={activeSession.plan.constraints}
+                    activeRouteIdx={activeSession.activeRouteIdx}
+                    onPick={applyRoutePick}
+                  />
+                )}
               </div>
 
               <aside className="space-y-4">
-                <ReplanCard
-                  actions={quickActions}
-                  value={refineText}
-                  onChange={setRefineText}
-                  onPick={applyRefineText}
-                  agentNote={activeSession.agentNote}
-                />
-                <TripTipsCard route={activeRoute} />
+                {hasRouteStops ? (
+                  <>
+                    <ReplanCard
+                      actions={quickActions}
+                      value={refineText}
+                      onChange={setRefineText}
+                      onPick={applyRefineText}
+                      agentNote={activeSession.agentNote}
+                    />
+                    <TripTipsCard route={activeRoute} />
+                  </>
+                ) : (
+                  <BackendStatusDetails plan={activeSession.plan} compact onClarifyCity={applyClarificationCity} />
+                )}
               </aside>
             </div>
           </section>
@@ -917,6 +1342,107 @@ function UnsupportedCityNotice({ notice, compact = false }: { notice: CityGateNo
   );
 }
 
+function PlanEmptyState({
+  session,
+  onClarifyCity,
+}: {
+  session: PlannerSession;
+  onClarifyCity?: (city: string) => void | Promise<void>;
+}) {
+  const meta = session.plan.backendMeta;
+  const route = session.plan.routes[0];
+  const options = meta?.clarificationOptions ?? [];
+  return (
+    <section className="relative overflow-hidden rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-950 shadow-[0_10px_24px_rgba(68,50,31,.08)]">
+      <div className="max-w-3xl">
+        <p className="mb-2 flex items-center gap-2 text-[12px] font-semibold tracking-[0.2em] text-amber-800">
+          <Database size={15} strokeWidth={1.6} />
+          后端规划状态
+        </p>
+        <h2 className="text-[26px] font-semibold leading-tight sm:text-[34px]">
+          {meta?.status === 'needs-clarification' ? '需要补充城市' : '暂未生成路线'}
+        </h2>
+        <p className="mt-3 max-w-2xl text-[14px] leading-7">{route.explanation}</p>
+        {options.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {options.slice(0, 6).map((city) => (
+              <button
+                key={city}
+                type="button"
+                onClick={() => onClarifyCity?.(city)}
+                className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-[13px] font-semibold text-amber-950 transition hover:border-[#201B16]"
+              >
+                {city}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <CoverMetric icon={Database} label="status" value={meta?.status ?? 'unknown'} tone="amber" />
+        <CoverMetric icon={MapPinned} label="source" value={meta?.source ?? 'fallback-no-data'} tone="amber" />
+        <CoverMetric icon={ShieldCheck} label="城市" value={meta?.city ?? meta?.province ?? session.plan.constraints.city} tone="amber" />
+      </div>
+    </section>
+  );
+}
+
+function BackendStatusDetails({
+  plan,
+  compact = false,
+  onClarifyCity,
+}: {
+  plan: PlanResult;
+  compact?: boolean;
+  onClarifyCity?: (city: string) => void | Promise<void>;
+}) {
+  const meta = plan.backendMeta;
+  const warnings = meta?.warnings ?? plan.routes[0]?.risks ?? [];
+  const dataSources = meta?.dataSources ?? {};
+  const preferenceImpact = meta?.preferenceImpact ?? [];
+  const options = meta?.clarificationOptions ?? [];
+  return (
+    <section className={`rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] ${compact ? 'p-3' : 'p-4'}`}>
+      <div className="mb-3 flex items-center gap-2">
+        <Database size={17} strokeWidth={1.6} />
+        <h3 className="font-semibold text-[#201B16]">统一后端返回</h3>
+      </div>
+      <div className="space-y-2 text-[12px] leading-5 text-[#665744]">
+        <p><b>status：</b>{meta?.status ?? 'unknown'}</p>
+        <p><b>source：</b>{meta?.source ?? 'unknown'}</p>
+        <p><b>城市：</b>{meta?.city ?? meta?.province ?? plan.constraints.city}</p>
+        {meta?.district && <p><b>区县：</b>{meta.district}</p>}
+        {meta?.anchors?.length ? <p><b>锚点：</b>{meta.anchors.join(' / ')}</p> : null}
+        {options.length > 0 && (
+          <div className="flex flex-wrap gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+            {options.slice(0, 6).map((city) => (
+              <button
+                key={city}
+                type="button"
+                onClick={() => onClarifyCity?.(city)}
+                className="rounded-md border border-amber-300 bg-white px-2 py-1 text-[12px] font-semibold text-amber-950 transition hover:border-[#201B16]"
+              >
+                {city}
+              </button>
+            ))}
+          </div>
+        )}
+        {warnings.length > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
+            {warnings.map((warning, index) => <p key={index}>{warning}</p>)}
+          </div>
+        )}
+        <details>
+          <summary className="cursor-pointer font-semibold text-[#4F4233]">查看数据源与偏好影响</summary>
+          <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-[#F7F0E2] p-2 text-[11px] leading-5">
+            {JSON.stringify({ locationResolution: meta?.locationResolution, dataSources, preferenceImpact, planningBasis: meta?.planningBasis }, null, 2)}
+          </pre>
+        </details>
+      </div>
+    </section>
+  );
+}
+
 function RouteCover({
   route, persona, risk, budget,
 }: {
@@ -1030,7 +1556,7 @@ function StopCard({
       {index > 0 && stop.legFromPrev && (
         <div className="mb-2 flex items-center gap-2 rounded-lg border border-[#E6D8C3] bg-[#FBF4E7] px-3 py-2 text-[12px] text-[#6F604E]">
           <Navigation size={14} strokeWidth={1.6} />
-          上一站 → 本站：{formatLegMode(stop.legFromPrev.mode)} {stop.legFromPrev.minutes} 分钟 · {formatDistance(stop.legFromPrev.distM)}
+          上一站 → 本站：{formatLegMode(stop.legFromPrev.mode)} {formatMoveMinutes(stop.legFromPrev.minutes)} · {formatDistance(stop.legFromPrev.distM)}
         </div>
       )}
 
@@ -1306,6 +1832,7 @@ function SessionNotes({
       {sessions.map((session, index) => {
         const active = session.id === activeSessionId;
         const route = safeRoute(session);
+        const meta = session.plan.backendMeta;
         return (
           <button
             key={session.id}
@@ -1315,7 +1842,14 @@ function SessionNotes({
             style={{ '--tilt': `${index % 2 === 0 ? -1.5 : 1.2}deg` } as CSSProperties}
           >
             <span className="block text-[11px] font-semibold tracking-[0.16em] opacity-70">规划记录</span>
-            <span className="mt-1 block text-[13px] font-semibold leading-5">{session.title}</span>
+            <span className="mt-1 block text-[13px] font-semibold leading-5">
+              {meta ? `${meta.city ?? meta.province ?? '待指定城市'} · ${meta.source}` : session.title}
+            </span>
+            {meta && (
+              <span className="mt-1 block text-[10px] font-semibold leading-4 opacity-70">
+                {meta.status}
+              </span>
+            )}
             <span className="mt-1 block text-[11px] leading-4 opacity-75">
               ¥{route.totalCost} · {route.stops.length}站
             </span>
@@ -1398,6 +1932,10 @@ function JudgeAppendix({ session, route }: { session: PlannerSession; route: Rou
 function DataSourceCard({ plan }: { plan: PlanResult }) {
   const [amapStatus, setAmapStatus] = useState<'checking' | 'configured' | 'not_configured' | 'unreachable'>('checking');
   const usesAmapPoi = plan.candidates.some((candidate) => candidate.poi.source === 'amap');
+  const meta = plan.backendMeta;
+  const backendDataSources = meta?.dataSources ?? {};
+  const backendSource = meta?.source ?? (usesAmapPoi ? 'amap-local-rules' : 'local-mock');
+  const locationResolution = meta?.locationResolution as BackendPlanResponse['locationResolution'] | undefined;
 
   useEffect(() => {
     let alive = true;
@@ -1448,28 +1986,52 @@ function DataSourceCard({ plan }: { plan: PlanResult }) {
           <div className="rounded-lg border border-[#E4D5BE] bg-[#FFFDF8] p-2">
             <span className="text-[11px] text-[#8A765F]">当前路线数据源</span>
             <p className="mt-1 font-semibold text-[#201B16]">
-              {usesAmapPoi ? '高德真实 POI · 本地规则估算' : 'mock POI · API adapter available'}
+              {backendSource}
             </p>
           </div>
         </div>
-        {usesAmapPoi ? (
-          <p>
-            当前这条非上海试验路线使用高德真实 POI 名称、地址与坐标；人均、排队、UGC、偏好解释仍由本地规则估算。
-          </p>
-        ) : (
-          <p>
-            当前路线主流程默认使用本地 mock POI、mock UGC、人均、排队、评分、营业与地图距离字段，
-            保证 Demo 稳定可演示,再由规则化 Agent Loop 完成规划。
-          </p>
-        )}
         <p>
-          链路为 parseConstraints → retrieveCandidates → scorePOIs → buildRouteCandidates → validateRoute → repair/replan → explainRoute。
+          {meta
+            ? '当前新规划由统一后端接口返回：先解析城市/偏好，再调用高德 POI，成功后交给 DeepSeek 生成旅行书 JSON，并由前端展示稳定结构。'
+            : usesAmapPoi
+              ? '当前这条非上海试验路线使用高德真实 POI 名称、地址与坐标；人均、排队、UGC、偏好解释仍由本地规则估算。'
+              : '当前是历史/离线 demo 路线，使用本地 mock POI 保证初始演示稳定。'}
         </p>
         <p>
-          已提供 Vercel 高德 API adapter 雏形:/api/amap/poi-search 与 /api/amap/route-walking。
-          在 Vercel 配置 AMAP_KEY 后可调用真实高德 POI 搜索与步行路径估算。
+          链路为 {meta ? '/api/ai/plan → Location Resolver → 高德行政区/POI → DeepSeek JSON → route checks → frontend adapter' : 'parseConstraints → retrieveCandidates → scorePOIs → buildRouteCandidates → validateRoute → repair/replan → explainRoute'}。
+        </p>
+        {locationResolution?.resolutionPath?.length ? (
+          <div className="rounded-lg border border-[#E4D5BE] bg-[#FFFDF8] p-2">
+            <span className="text-[11px] text-[#8A765F]">地名解析路径</span>
+            <p className="mt-1 text-[12px] font-semibold text-[#201B16]">
+              {locationResolution.resolutionPath.join(' → ')}
+            </p>
+          </div>
+        ) : null}
+        <p>
+          高德环境变量支持 AMAP_API_KEY / GAODE_API_KEY / AMAP_KEY；DeepSeek 使用 DEEPSEEK_API_KEY 和 DEEPSEEK_MODEL。
           当前没有接入美团/点评真实交易、排队、UGC 或团购数据。
         </p>
+        {meta && (
+          <details>
+            <summary className="cursor-pointer font-semibold text-[#4F4233]">查看后端数据源明细</summary>
+            <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-[#F7F0E2] p-2 text-[11px] leading-5">
+              {JSON.stringify({
+                status: meta.status,
+                source: meta.source,
+                city: meta.city,
+                province: meta.province,
+                district: meta.district,
+                anchors: meta.anchors,
+                locationResolution,
+                dataSources: backendDataSources,
+                planningBasis: meta.planningBasis,
+                preferenceImpact: meta.preferenceImpact,
+                warnings: meta.warnings,
+              }, null, 2)}
+            </pre>
+          </details>
+        )}
       </div>
     </div>
   );

@@ -4,17 +4,18 @@ import { CATEGORY_LABEL } from '../types';
 import {
   ScorePill, ScoreBreakdownBars, Badge, fmtH, Card, SectionLabel,
 } from './ui';
+import { formatDistance, formatMoveMinutes } from '../lib/display';
 
 function LegConnector({ leg }: { leg: NonNullable<Route['stops'][0]['legFromPrev']> }) {
   const isWalk = leg.mode === 'walk';
-  const dist = leg.distM < 1000 ? `${leg.distM}m` : `${(leg.distM / 1000).toFixed(1)}km`;
+  const dist = formatDistance(leg.distM);
   return (
     <div className="flex items-center gap-2 py-1.5 pl-[52px] text-[11px] text-ink-400">
       <span className="inline-flex h-4 items-center">
         <span className="ml-[-1px] mr-2 h-4 w-px bg-ink-200" />
       </span>
       <span className="rounded-full bg-ink-50 px-2 py-0.5">
-        {isWalk ? '🚶 步行' : '🚇 地铁/打车'} {leg.minutes} 分钟 · {dist}
+        {isWalk ? '🚶 步行' : '🚇 地铁/打车'} {formatMoveMinutes(leg.minutes)} · {dist}
       </span>
     </div>
   );
@@ -94,7 +95,7 @@ export function RouteTimeline({
         <SectionLabel hint={`${route.stops.length} 站 · 实时计算`}>推荐路线</SectionLabel>
         <div className="flex flex-wrap items-center gap-3 text-[12px] text-ink-500">
           <span className="tnum">人均 <b className="text-ink-800">¥{route.totalCost}</b></span>
-          <span className="tnum">步行 {route.totalWalkMin}min</span>
+          <span className="tnum">{route.totalWalkMin > 0 ? `步行 ${route.totalWalkMin}min` : '步行少'}</span>
           <span className="tnum">车程 {route.totalTransitMin}min</span>
           <span className="tnum">收尾 {fmtH(route.endTime)}</span>
         </div>

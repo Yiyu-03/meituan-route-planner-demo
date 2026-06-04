@@ -31,12 +31,12 @@ export default async function handler(req, res) {
     return send(res, 405, { status: 'method_not_allowed', message: 'Use GET /api/amap/poi-search' });
   }
 
-  const key = process.env.AMAP_KEY;
+  const key = process.env.AMAP_API_KEY || process.env.GAODE_API_KEY || process.env.AMAP_KEY;
   if (!key) {
     return send(res, 200, {
       status: 'not_configured',
       configured: false,
-      message: 'AMAP_KEY is not configured. Add it in Vercel Environment Variables to enable real AMap POI search.',
+      message: 'AMAP_API_KEY/GAODE_API_KEY/AMAP_KEY is not configured. Add it in Vercel Environment Variables to enable real AMap POI search.',
       results: [],
       source: 'amap_adapter',
     });

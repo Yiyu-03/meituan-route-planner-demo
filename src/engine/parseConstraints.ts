@@ -7,7 +7,34 @@ import { AREAS } from '../data/areas';
 // 刻意不调用 LLM —— 抽取过程必须可审计,这是「非黑盒」的基础。
 // ------------------------------------------------------------
 
-const CITY_KEYS = ['上海', '魔都'];
+const CITY_KEYS: { match: string; city: string }[] = [
+  { match: '北京', city: '北京' },
+  { match: '上海', city: '上海' },
+  { match: '魔都', city: '上海' },
+  { match: '天津', city: '天津' },
+  { match: '重庆', city: '重庆' },
+  { match: '杭州', city: '杭州' },
+  { match: '苏州', city: '苏州' },
+  { match: '南京', city: '南京' },
+  { match: '成都', city: '成都' },
+  { match: '广州', city: '广州' },
+  { match: '深圳', city: '深圳' },
+  { match: '西安', city: '西安' },
+  { match: '武汉', city: '武汉' },
+  { match: '长沙', city: '长沙' },
+  { match: '厦门', city: '厦门' },
+  { match: '青岛', city: '青岛' },
+  { match: '乌鲁木齐', city: '乌鲁木齐' },
+  { match: '乌市', city: '乌鲁木齐' },
+  { match: '喀什', city: '喀什' },
+  { match: '伊犁', city: '伊犁' },
+  { match: '伊宁', city: '伊犁' },
+  { match: '吐鲁番', city: '吐鲁番' },
+  { match: '阿勒泰', city: '阿勒泰' },
+  { match: '库尔勒', city: '库尔勒' },
+  { match: '哈密', city: '哈密' },
+  { match: '新疆', city: '乌鲁木齐' },
+];
 
 // 区域别名 → area.key
 const AREA_ALIASES: Record<string, string> = {
@@ -204,9 +231,9 @@ export function parseIntent(raw: string): IntentDraft {
   const matched: string[] = [];
 
   // city
-  const cityHit = CITY_KEYS.find((c) => raw.includes(c));
-  const city = cityHit ?? '上海';
-  if (cityHit) matched.push(cityHit);
+  const cityHit = CITY_KEYS.find((c) => raw.includes(c.match));
+  let city = cityHit?.city ?? '';
+  if (cityHit) matched.push(cityHit.match === cityHit.city ? cityHit.city : `${cityHit.match}→${cityHit.city}`);
 
   // areas
   const areaHits: string[] = [];
@@ -216,6 +243,7 @@ export function parseIntent(raw: string): IntentDraft {
       matched.push(alias);
     }
   }
+  if (!city) city = areaHits.length ? '上海' : '未指定城市';
 
   // time
   const st = parseStartTime(raw);

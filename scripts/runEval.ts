@@ -52,7 +52,7 @@ for (const c of PERSONA_DIFF_CASES) {
 }
 
 // ---- Part 3: 产品体验回归 ----
-console.log(`${C.bold}【Part 3】产品体验回归(8 cases)${C.reset}\n`);
+console.log(`${C.bold}【Part 3】产品体验回归${C.reset}\n`);
 
 const productResults = [
   runRouteVerdictHardGateCase(),
@@ -60,8 +60,9 @@ const productResults = [
   await runSuzhouKunshanCase('朋友来苏州昆山区，他上午10点到，预算200吃午饭，打算带他听昆区，逛逛自然风光、博物馆什么的'),
   await runSuzhouHuqiuCase('朋友来苏州，带他虎丘区转转，他上午10点到，预算人均150吃午饭，暂时没想好去哪里逛，但是多逛几个地方。也可以去KTV等地方'),
   runUiNoDebugCase(),
-  runDaxueluBudgetCase('周五晚上和朋友在大学路聚会，人均200以内，想热闹但不要太累'),
+  await runDaxueluBudgetCase('周五晚上和朋友在大学路聚会，人均200以内，想热闹但不要太累'),
   await runHangzhouRemoteCase('朋友来杭州，下午在西湖附近逛逛，预算200，想轻松一点'),
+  await runJinganAddStopsCase('带家人周末下午在静安寺附近玩，预算150，亲子友好'),
   runShanghaiMockRegression(),
 ];
 
@@ -176,6 +177,7 @@ async function runAgentRefines(
   const expectedIntent = (text: string): RefinePrimaryIntent => {
     if (/车程|太远|少打车/.test(text)) return 'reduceTravel';
     if (/多逛|多玩|再加/.test(text)) return 'addStop';
+    if (/(?:不要|不想|别|不喝|少喝).{0,8}(?:咖啡|奶茶|茶饮|喝茶|饮品|下午茶)/.test(text)) return 'avoidFoodOrDrink';
     if (/奶茶|咖啡|茶饮/.test(text)) return 'addFoodOrDrink';
     if (/安静/.test(text)) return 'makeQuiet';
     return 'unknown';
@@ -350,20 +352,37 @@ function runUiNoDebugCase(): ProductCaseResult {
   };
 }
 
-function runDaxueluBudgetCase(input: string): ProductCaseResult {
+async function runDaxueluBudgetCase(input: string): Promise<ProductCaseResult> {
   const result = runPipeline(input, PERSONA_MAP.friends);
   const route = result.routes[0];
   const cheap = route ? applyRefine(parseRefine('便宜一点'), route, result.constraints, PERSONA_MAP.friends, result.candidates) : null;
+  const avoidCoffee = route ? await runRefineAgent({
+    rawInput: '晚上不要喝咖啡',
+    currentRoute: route,
+    constraints: result.constraints,
+    persona: PERSONA_MAP.friends,
+    candidates: result.candidates,
+    originalRequest: input,
+    useLLM: false,
+  }) : null;
   const badPhotoLabel = result.routes.some((candidate, idx) => {
     const label = routeAdvantage(result.routes, idx, result.constraints.budgetPerCapita).label;
     const photoCount = candidate.stops.filter((stop) => stop.scored.poi.sceneTags.includes('photo')).length;
     return label === '拍照友好版' && photoCount === 0;
+  });
+  const misleadingWalkLabel = result.routes.some((candidate, idx) => {
+    const label = routeAdvantage(result.routes, idx, result.constraints.budgetPerCapita).label;
+    const overBudget = result.constraints.budgetPerCapita != null && candidate.totalCost > result.constraints.budgetPerCapita;
+    const notLessThanBase = route ? candidate.totalWalkMin + candidate.totalTransitMin >= route.totalWalkMin + route.totalTransitMin : false;
+    return label === '少走路版' && (overBudget || notLessThanBase);
   });
   const asserts = [
     { name: '生成路线', pass: Boolean(route), desc: '大学路预算输入能生成路线' },
     { name: '进入预算', pass: Boolean(route && route.totalCost <= 230), desc: '推荐方案尽量 ≤ ¥230' },
     { name: '预算 repair 记录', pass: Boolean(result.repairLog?.some((log) => /预算/.test(log.trigger))), desc: '初始超预算时进入 repair' },
     { name: '便宜一点真降价', pass: Boolean(cheap && route && cheap.route.totalCost <= route.totalCost - 20), desc: '低预算操作显著降低人均' },
+    { name: '晚上不要喝咖啡', pass: Boolean(avoidCoffee && avoidCoffee.intent.primaryIntent === 'avoidFoodOrDrink' && !/想加|加咖啡/.test(avoidCoffee.message)), desc: avoidCoffee?.message ?? '未执行' },
+    { name: '少走路标签不误导', pass: !misleadingWalkLabel, desc: '超预算或并不更少移动的备选不叫少走路版' },
     { name: '无 0 出片标签', pass: !badPhotoLabel, desc: '不出现“拍照友好版 · 0 个出片点”' },
   ];
   return {
@@ -372,6 +391,34 @@ function runDaxueluBudgetCase(input: string): ProductCaseResult {
     asserts,
     allPass: asserts.every((item) => item.pass),
     stops: route?.stops.map((stop) => `${stop.scored.poi.name}(¥${stop.scored.poi.perCapita})`).concat(cheap ? [`便宜一点:¥${cheap.route.totalCost}`] : []) ?? [],
+  };
+}
+
+async function runJinganAddStopsCase(input: string): Promise<ProductCaseResult> {
+  const result = runPipeline(input, PERSONA_MAP.family);
+  const route = result.routes[0];
+  const refine = route ? await runRefineAgent({
+    rawInput: '想要多走走路，再逛两个地方',
+    currentRoute: route,
+    constraints: result.constraints,
+    persona: PERSONA_MAP.family,
+    candidates: result.candidates,
+    originalRequest: input,
+    useLLM: false,
+  }) : null;
+  const expectedStops = route ? Math.min(5, route.stops.length + 2) : 0;
+  const asserts = [
+    { name: '生成路线', pass: Boolean(route), desc: '静安亲子输入能生成路线' },
+    { name: '识别两个地方', pass: Boolean(refine && refine.intent.primaryIntent === 'addStop' && refine.intent.slots.stopCount === 2), desc: refine?.message ?? '未执行' },
+    { name: '实际加到两站或解释', pass: Boolean(refine && (refine.route.stops.length >= expectedStops || /时间窗口|移动距离|排得过满|不适合再增加/.test(refine.message))), desc: refine?.route.stops.map((stop) => stop.scored.poi.name).join(' → ') ?? '未执行' },
+    { name: '加站后仍安全', pass: Boolean(refine && routeVerdict(refine.route, refine.constraints).status !== 'blocked' && !routeHasHardMove(refine.route)), desc: '加站不能破坏硬闸门' },
+  ];
+  return {
+    id: 'jingan-add-two-stops',
+    title: '静安亲子·多走走路再逛两个地方',
+    asserts,
+    allPass: asserts.every((item) => item.pass),
+    stops: route?.stops.map((stop) => stop.scored.poi.name).concat(refine ? [`改写:${refine.route.stops.map((stop) => stop.scored.poi.name).join(' → ')}`] : []) ?? [],
   };
 }
 
