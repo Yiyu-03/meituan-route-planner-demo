@@ -8,6 +8,78 @@ const PROVINCE_OPTION_PREFS = {
   浙江省: ['杭州', '宁波', '绍兴', '温州'],
   湖北省: ['武汉', '宜昌', '襄阳', '荆州'],
   湖南省: ['长沙', '张家界', '岳阳', '湘潭'],
+  新疆维吾尔自治区: ['乌鲁木齐', '喀什', '吐鲁番', '阿勒泰', '北屯'],
+};
+
+const PROVINCE_ALIASES = {
+  北京: '北京市',
+  北京市: '北京市',
+  上海: '上海市',
+  上海市: '上海市',
+  天津: '天津市',
+  天津市: '天津市',
+  重庆: '重庆市',
+  重庆市: '重庆市',
+  河北: '河北省',
+  河北省: '河北省',
+  山西: '山西省',
+  山西省: '山西省',
+  辽宁: '辽宁省',
+  辽宁省: '辽宁省',
+  吉林: '吉林省',
+  吉林省: '吉林省',
+  黑龙江: '黑龙江省',
+  黑龙江省: '黑龙江省',
+  江苏: '江苏省',
+  江苏省: '江苏省',
+  浙江: '浙江省',
+  浙江省: '浙江省',
+  安徽: '安徽省',
+  安徽省: '安徽省',
+  福建: '福建省',
+  福建省: '福建省',
+  江西: '江西省',
+  江西省: '江西省',
+  山东: '山东省',
+  山东省: '山东省',
+  河南: '河南省',
+  河南省: '河南省',
+  湖北: '湖北省',
+  湖北省: '湖北省',
+  湖南: '湖南省',
+  湖南省: '湖南省',
+  广东: '广东省',
+  广东省: '广东省',
+  海南: '海南省',
+  海南省: '海南省',
+  四川: '四川省',
+  四川省: '四川省',
+  贵州: '贵州省',
+  贵州省: '贵州省',
+  云南: '云南省',
+  云南省: '云南省',
+  陕西: '陕西省',
+  陕西省: '陕西省',
+  甘肃: '甘肃省',
+  甘肃省: '甘肃省',
+  青海: '青海省',
+  青海省: '青海省',
+  台湾: '台湾省',
+  台湾省: '台湾省',
+  内蒙古: '内蒙古自治区',
+  内蒙古自治区: '内蒙古自治区',
+  广西: '广西壮族自治区',
+  广西壮族自治区: '广西壮族自治区',
+  西藏: '西藏自治区',
+  西藏自治区: '西藏自治区',
+  宁夏: '宁夏回族自治区',
+  宁夏回族自治区: '宁夏回族自治区',
+  新疆: '新疆维吾尔自治区',
+  新疆维吾尔自治区: '新疆维吾尔自治区',
+  香港: '香港特别行政区',
+  香港特别行政区: '香港特别行政区',
+  澳门: '澳门特别行政区',
+  澳门特别行政区: '澳门特别行政区',
 };
 
 const ALIAS_REPLACEMENTS = [
@@ -29,7 +101,7 @@ const ALIAS_REPLACEMENTS = [
 
 const GENERIC_POI_WORDS = new Set([
   '景点', '公园', '博物馆', '博物院', '美术馆', '餐厅', '饭店', '咖啡', '奶茶',
-  '早午餐', 'brunch', '羊肉串', '烧烤', '美食', '地方', '城市', '附近',
+  '早午餐', 'brunch', '羊肉串', '烧烤', '美食', '午饭', '晚饭', '早饭', '地方', '城市', '附近',
 ]);
 
 const BAD_POI_RE = /酒店|宾馆|停车场|政府|学校|小区|住宅|写字楼|产业园|售楼|服务区|收费站|KTV|夜总会|洗浴|足浴|按摩/i;
@@ -107,12 +179,39 @@ function sleep(ms) {
 }
 
 async function fetchAmapJson(url, timeoutMs) {
-  const first = await fetchJson(url, timeoutMs);
-  if (first?.infocode === '10021' || /EXCEEDED_THE_LIMIT/i.test(asString(first?.info))) {
-    await sleep(380);
-    return fetchJson(url, timeoutMs);
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const data = await fetchJson(url, timeoutMs);
+      if (data?.infocode === '10021' || /EXCEEDED_THE_LIMIT/i.test(asString(data?.info))) {
+        await sleep(420 + attempt * 220);
+        continue;
+      }
+      return data;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await sleep(260 + attempt * 260);
+    }
   }
-  return first;
+  throw lastError ?? new Error('Amap request failed');
+}
+
+function shouldTryCitySuffix(keyword) {
+  const clean = asString(keyword);
+  return /^[\u4e00-\u9fa5]{2,8}$/.test(clean)
+    && !/(省|自治区|特别行政区|市|地区|自治州|州|盟|区|县|旗|乡|镇|街道)$/.test(clean);
+}
+
+function normalizeDistrictResponse(data) {
+  if (data?.status !== '1') {
+    return { configured: true, used: true, status: 'error', info: data?.info, districts: [] };
+  }
+  return {
+    configured: true,
+    used: true,
+    status: (data.districts ?? []).length ? 'ok' : 'empty',
+    districts: data.districts ?? [],
+  };
 }
 
 async function districtLookup(keyword, subdistrict = 0) {
@@ -130,16 +229,19 @@ async function districtLookup(keyword, subdistrict = 0) {
     output: 'JSON',
   });
   const result = fetchAmapJson(`${AMAP_BASE_URL}/config/district?${params.toString()}`, DISTRICT_TIMEOUT_MS)
-    .then((data) => {
-      if (data?.status !== '1') {
-        return { configured: true, used: true, status: 'error', info: data?.info, districts: [] };
-      }
-      return {
-        configured: true,
-        used: true,
-        status: (data.districts ?? []).length ? 'ok' : 'empty',
-        districts: data.districts ?? [],
-      };
+    .then(async (data) => {
+      const primary = normalizeDistrictResponse(data);
+      if (primary.status !== 'empty' || !shouldTryCitySuffix(clean)) return primary;
+      const fallbackParams = new URLSearchParams({
+        key,
+        keywords: `${clean}市`,
+        subdistrict: String(subdistrict),
+        extensions: 'base',
+        output: 'JSON',
+      });
+      const fallback = await fetchAmapJson(`${AMAP_BASE_URL}/config/district?${fallbackParams.toString()}`, DISTRICT_TIMEOUT_MS);
+      const secondary = normalizeDistrictResponse(fallback);
+      return secondary.status === 'ok' ? secondary : primary;
     })
     .catch((error) => ({
       configured: true,
@@ -320,6 +422,34 @@ function expandAdminHint(value) {
   return uniq(hints);
 }
 
+function explicitAdminSelections(text) {
+  const matches = [...text.matchAll(/(?:城市|目的地|区域|区县|地点)\s*[:：]\s*([^，,。；;\s]{2,12})/g)];
+  return uniq(matches.flatMap((match) => splitLocationList(match[1])));
+}
+
+function looseAdminFragments(text) {
+  const fragments = [];
+  fragments.push(...explicitAdminSelections(text));
+
+  const travelRuns = [...text.matchAll(/[\u4e00-\u9fa5]{2,40}/g)].map((match) => match[0]);
+  const stopWords = /朋友|同学|同事|家人|客户|我们|他们|她们|上午|下午|晚上|早上|中午|预算|人均|打算|计划|安排|想要|想去|想逛|来|去|到|在|玩|旅游|旅行|出差|逛|吃|喝|带他|带她|带朋友|带客户|一下|逛逛|看看|博物馆|博物院|美术馆|公园|餐厅|饭店|羊肉串|烧烤|午饭|晚饭|早饭|以内|左右|以内/g;
+  for (const run of travelRuns) {
+    const cleanRun = run.replace(/(?:上午|下午|晚上|早上|中午)?\d{1,2}点/g, ' ');
+    for (const piece of cleanRun.split(stopWords)) {
+      const clean = cleanupAdminHint(piece)
+        .replace(/^(?:的|和|及|以及|再|然后|顺便|附近|边上|旁边)+/, '')
+        .replace(/(?:的|和|及|以及|再|然后|顺便|附近|边上|旁边)+$/, '')
+        .trim();
+      if (clean.length < 2 || clean.length > 12) continue;
+      if (GENERIC_POI_WORDS.has(clean)) continue;
+      if (/预算|人均|朋友|上午|下午|晚上|早上|中午|打算|计划|安排/.test(clean)) continue;
+      fragments.push(clean);
+    }
+  }
+
+  return uniq(fragments);
+}
+
 function addPhrasePoiHints(text, poiHints) {
   const foodPlaceMatches = [...text.matchAll(/(?:带(?:他|她|ta|TA|朋友|同学|家人|客户)?|去|到|在)([\u4e00-\u9fa5A-Za-z0-9·]{2,16}?)(?:吃|喝|逛|玩|午饭|晚饭|brunch)/g)];
   for (const match of foodPlaceMatches) {
@@ -343,6 +473,8 @@ export function extractLocationHints(rawInput) {
   const comeMatch = text.match(/来([^，,。；;\s]{2,18}?)(?:玩|旅游|旅行|出差|逛|$)/);
   if (comeMatch?.[1]) adminHints.push(...splitLocationList(comeMatch[1]));
 
+  adminHints.push(...looseAdminFragments(text));
+
   const arriveMatches = [...text.matchAll(/(?:到|在)([^，,。；;\s]{2,18}?)(?:，|,|。|；|;|\s|人均|预算|想|吃|逛|玩|$)/g)];
   for (const match of arriveMatches) adminHints.push(...splitLocationList(match[1]));
 
@@ -354,7 +486,13 @@ export function extractLocationHints(rawInput) {
   addPhrasePoiHints(text, poiHints);
 
   const expandedAdminHints = adminHints.flatMap((item) => expandAdminHint(item));
-  const adminSet = new Set(uniq(expandedAdminHints).filter((item) => !GENERIC_POI_WORDS.has(item)));
+  const explicitAdminHints = explicitAdminSelections(text);
+  const adminCandidates = uniq(expandedAdminHints).filter((item) => !GENERIC_POI_WORDS.has(item));
+  const explicitProvinceContext = adminCandidates.filter((item) => {
+    const province = PROVINCE_ALIASES[item];
+    return province && !MUNICIPALITIES.has(province);
+  });
+  const adminSet = new Set(explicitAdminHints.length ? uniq([...explicitAdminHints, ...explicitProvinceContext]) : adminCandidates);
   const poiSet = new Set(uniq(poiHints).filter((item) => !GENERIC_POI_WORDS.has(item)));
 
   for (const item of adminSet) {
@@ -378,6 +516,46 @@ function childOptionsFromProvince(district) {
   const province = normalizeProvinceName(district?.name);
   const preferred = PROVINCE_OPTION_PREFS[province] ?? [];
   return uniq([...preferred.filter((item) => names.includes(item)), ...names]).slice(0, 8);
+}
+
+function fallbackProvinceDistrict(keyword) {
+  const province = PROVINCE_ALIASES[asString(keyword)];
+  if (!province || MUNICIPALITIES.has(province)) return null;
+  return {
+    name: province,
+    level: 'province',
+    adcode: '',
+    citycode: '',
+    center: '',
+    districts: (PROVINCE_OPTION_PREFS[province] ?? []).map((name) => ({ name: `${name}市`, level: 'city' })),
+  };
+}
+
+function provinceChildEvidenceFromHints(province, hints) {
+  const options = province?.options ?? [];
+  if (!options.length) return null;
+  const optionByCleanName = new Map(options.map((name) => [stripCitySuffix(name), stripCitySuffix(name)]));
+  const provinceClean = stripCitySuffix(province.province);
+  for (const hint of hints) {
+    const clean = stripCitySuffix(hint);
+    if (!clean || clean === provinceClean || clean === province.province) continue;
+    const city = optionByCleanName.get(clean);
+    if (!city) continue;
+    return {
+      kind: 'city',
+      keyword: hint,
+      city,
+      province: province.province,
+      district: null,
+      adcode: null,
+      citycode: null,
+      center: null,
+      matched: `${hint}=>${city}`,
+      confidence: 0.86,
+      source: 'district-province-child',
+    };
+  }
+  return null;
 }
 
 async function normalizeAdminDistrict(keyword, district) {
@@ -556,8 +734,8 @@ function mergeCityInfo(chosen, preferredDistrict = null) {
   const strong = items.find((item) => item.kind === 'city')
     ?? items.find((item) => item.kind === 'district')
     ?? items[0];
-  const district = items.find((item) => item.kind === 'district' && item.district)?.district
-    ?? preferredDistrict
+  const district = preferredDistrict
+    ?? items.find((item) => item.kind === 'district' && item.district)?.district
     ?? items.find((item) => item.district)?.district
     ?? null;
   return {
@@ -568,6 +746,17 @@ function mergeCityInfo(chosen, preferredDistrict = null) {
     citycode: strong?.citycode || null,
     center: strong?.center ?? items.find((item) => item.center)?.center ?? null,
   };
+}
+
+function anchorHintsFromAdminHints(adminHints, cityInfo, provinceOnly, adminEvidence) {
+  const ignored = new Set([
+    cityInfo.city,
+    `${cityInfo.city}市`,
+    cityInfo.province,
+    ...provinceOnly.flatMap((item) => [item.keyword, item.province, stripCitySuffix(item.province)]),
+    ...adminEvidence.flatMap((item) => item.city ? [item.city, `${item.city}市`] : []),
+  ].filter(Boolean));
+  return adminHints.filter((hint) => !ignored.has(hint) && !ignored.has(stripCitySuffix(hint)));
 }
 
 function clarificationMessage(province, options) {
@@ -609,7 +798,13 @@ export async function resolveLocation(rawInput) {
       const lookup = await districtLookup(hint, 1);
       sourceUsage.amapDistrict.used = sourceUsage.amapDistrict.used || lookup.used;
       districtStatuses.push(lookup.status);
-      const first = lookup.districts?.[0];
+      let first = lookup.districts?.[0];
+      const provinceFallback = first ? null : fallbackProvinceDistrict(hint);
+      if (provinceFallback && lookup.used) {
+        first = provinceFallback;
+        districtStatuses.push('ok');
+        warnings.push(`高德行政区查询「${hint}」返回不稳定，已使用省级名称兜底。`);
+      }
       if (!first) {
         adminResults.push(null);
         continue;
@@ -622,6 +817,13 @@ export async function resolveLocation(rawInput) {
       matched.push(item.keyword === item.matched ? item.matched : `${item.keyword}=>${item.matched}`);
       if (item.kind === 'province') provinceOnly.push(item);
       else adminEvidence.push(item);
+    }
+    for (const province of provinceOnly) {
+      const childEvidence = provinceChildEvidenceFromHints(province, hints.adminHints);
+      if (childEvidence && !adminEvidence.some((item) => item.city === childEvidence.city)) {
+        adminEvidence.push(childEvidence);
+        matched.push(childEvidence.matched);
+      }
     }
   }
 
@@ -679,14 +881,15 @@ export async function resolveLocation(rawInput) {
 
   const chosen = chooseCity(adminEvidence, provinceHint);
   if (chosen?.city) {
-  const cityInfo = mergeCityInfo(chosen, preferredDistrictHint);
+    const cityInfo = mergeCityInfo(chosen, preferredDistrictHint);
     const districts = uniq([
       cityInfo.district,
       ...adminEvidence
         .filter((item) => item.kind === 'district' && item.district && item.city === cityInfo.city)
         .map((item) => item.district),
     ]);
-    const anchors = uniq([...districts, ...hints.poiHints]);
+    const adminAnchors = anchorHintsFromAdminHints(hints.adminHints, cityInfo, provinceOnly, adminEvidence);
+    const anchors = uniq([...districts, ...adminAnchors, ...hints.poiHints]);
     const confidence = Math.max(0.55, Math.min(0.98, chosen.score / Math.max(1, chosen.items.length)));
     matched.push(cityInfo.city);
     return {

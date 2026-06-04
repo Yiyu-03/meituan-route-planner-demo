@@ -848,7 +848,7 @@ export function MainDashboard() {
   const applyClarificationCity = async (city: string) => {
     if (isPlanning) return;
     const baseInput = activeSession?.input ?? draft;
-    const text = `${city}，${baseInput.replace(new RegExp(`^${city}[，,\\s]*`), '')}`.trim();
+    const text = `城市：${city}，${baseInput.replace(new RegExp(`^(?:城市[:：])?${city}[，,\\s]*`), '')}`.trim();
     setDraft(text);
     setCityGateNotice(null);
     setIsPlanning(true);
