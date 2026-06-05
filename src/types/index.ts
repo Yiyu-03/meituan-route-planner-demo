@@ -310,11 +310,13 @@ export interface PlanResult {
   backendMeta?: {
     status: string;
     source: string;
+    requestId?: string;
     city?: string;
     province?: string;
     district?: string;
     anchors?: string[];
     clarificationOptions?: string[];
+    adjustmentOptions?: string[];
     locationResolution?: Record<string, unknown>;
     warnings?: string[];
     dataSources?: Record<string, unknown>;

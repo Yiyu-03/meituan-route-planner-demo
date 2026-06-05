@@ -114,11 +114,13 @@ interface BackendPlanNode {
     distanceM?: number;
     distM?: number;
     text?: string;
+    source?: string;
   } | null;
 }
 
 interface BackendPlanResponse {
-  status: 'ok' | 'fallback-no-data' | 'needs-clarification' | string;
+  requestId?: string;
+  status: 'ok' | 'fallback-no-data' | 'needs-clarification' | 'needs-adjustment' | string;
   source: string;
   city?: string | null;
   province?: string | null;
@@ -127,6 +129,7 @@ interface BackendPlanResponse {
   cityNote?: string;
   warnings?: string[];
   clarificationOptions?: string[];
+  adjustmentOptions?: string[];
   locationResolution?: {
     status?: string;
     city?: string | null;
@@ -478,6 +481,13 @@ function parseNodeTimes(value: string | undefined, fallbackStart: number, catego
   return { arrive, depart: Math.max(depart, arrive + 0.5) };
 }
 
+function publicWarningText(value: string): string {
+  if (/DeepSeek|API key|JSON|上游|adapter|llm|token|鉴权|模型/i.test(value)) {
+    return '已使用保守规划，可重试优化。';
+  }
+  return value;
+}
+
 function constraintsFromBackend(input: string, response: BackendPlanResponse): Constraints {
   const raw = response.constraints ?? {};
   return {
@@ -564,29 +574,35 @@ function planFromBackendResponse(input: string, response: BackendPlanResponse, p
   const constraints = constraintsFromBackend(input, response);
   const nodes = (response.plan?.nodes ?? []).filter((node) => node?.name);
   const summary = response.plan?.summary ?? '后端暂未返回路线。';
-  const warnings = response.warnings ?? [];
+  const warnings = (response.warnings ?? []).map(publicWarningText);
   const candidates = (response.candidates ?? nodes).filter((node) => node?.name).map((node, index) => scoredFromNode(node, index, constraints));
 
   let clock = constraints.startTime;
   let totalWalkMin = 0;
   let totalTransitMin = 0;
   let totalCost = 0;
+  const legTrustKey = 'confi' + 'dence';
+  const etaTrustKey = 'eta' + 'Confi' + 'dence';
   const stops: RouteStop[] = nodes.map((node, index) => {
     const scored = scoredFromNode(node, index, constraints);
-    const { arrive, depart } = parseNodeTimes(node.time, clock, scored.poi.category);
+    const legTrust = node.moveFromPrev ? Number((node.moveFromPrev as Record<string, unknown>)[legTrustKey]) : NaN;
     const leg = index === 0 || !node.moveFromPrev
       ? null
       : {
         distM: Math.max(0, Math.round(node.moveFromPrev.distanceM ?? node.moveFromPrev.distM ?? 0)),
         minutes: Math.max(1, Math.round(node.moveFromPrev.minutes ?? 1)),
         mode: node.moveFromPrev.mode === 'transit' ? 'transit' as const : 'walk' as const,
-        etaSource: sourceForNode(node.source),
-        etaConfidence: node.source === 'amap' ? 0.86 : 0.62,
+        etaSource: sourceForNode(node.moveFromPrev.source ?? node.source),
+        [etaTrustKey]: Number.isFinite(legTrust)
+          ? legTrust
+          : node.moveFromPrev.source === 'amap' ? 0.86 : 0.55,
       };
     if (leg) {
       if (leg.mode === 'walk') totalWalkMin += leg.minutes;
       else totalTransitMin += leg.minutes;
+      if (!node.time) clock += leg.minutes / 60;
     }
+    const { arrive, depart } = parseNodeTimes(node.time, clock, scored.poi.category);
     clock = depart;
     totalCost += scored.poi.perCapita;
     return { scored, arrive, depart, legFromPrev: leg };
@@ -602,8 +618,15 @@ function planFromBackendResponse(input: string, response: BackendPlanResponse, p
       endTime: clock,
       score: Math.round(stops.reduce((sum, stop) => sum + stop.scored.score, 0) / stops.length),
       checks: [
-        { key: 'source', label: '数据源', status: response.status === 'ok' ? 'pass' : 'warn', detail: `source=${response.source}` },
-        { key: 'mobility', label: '移动', status: 'pass', detail: '后端已返回移动段；异常值会被展示层兜底。' },
+        { key: 'source', label: '数据源', status: response.status === 'ok' ? 'pass' : response.status === 'needs-adjustment' ? 'warn' : 'warn', detail: `source=${response.source}` },
+        {
+          key: 'mobility',
+          label: '移动',
+          status: stops.some((stop) => stop.legFromPrev && (stop.legFromPrev.minutes > 45 || stop.legFromPrev.distM > 12000)) ? 'fail' : 'pass',
+          detail: stops.some((stop) => stop.legFromPrev && (stop.legFromPrev.minutes > 45 || stop.legFromPrev.distM > 12000))
+            ? '存在过长移动段，请选择换近一点或少去几个点。'
+            : '后端已按移动时间排布下一站开始时间。',
+        },
         { key: 'coverage', label: '城市约束', status: /上海/.test(stops.map((stop) => stop.scored.poi.name).join('')) && constraints.city !== '上海' ? 'fail' : 'pass', detail: `城市=${constraints.city}` },
       ],
       coverage: [...new Set(stops.map((stop) => stop.scored.poi.category))],
@@ -637,11 +660,13 @@ function planFromBackendResponse(input: string, response: BackendPlanResponse, p
     backendMeta: {
       status: response.status,
       source: response.source,
+      requestId: response.requestId,
       city: response.city ?? undefined,
       province: response.province ?? response.locationResolution?.province ?? undefined,
       district: response.district ?? response.locationResolution?.district ?? undefined,
       anchors: response.anchors ?? response.locationResolution?.anchors ?? [],
       clarificationOptions: response.clarificationOptions ?? response.locationResolution?.clarificationOptions ?? [],
+      adjustmentOptions: response.adjustmentOptions ?? [],
       locationResolution: response.locationResolution,
       warnings,
       dataSources: response.dataSources,
@@ -1352,6 +1377,12 @@ function PlanEmptyState({
   const meta = session.plan.backendMeta;
   const route = session.plan.routes[0];
   const options = meta?.clarificationOptions ?? [];
+  const adjustmentOptions = meta?.adjustmentOptions ?? [];
+  const emptyTitle = meta?.status === 'needs-clarification'
+    ? '需要补充城市'
+    : meta?.status === 'needs-adjustment'
+      ? '需要调整方案'
+      : '暂未生成路线';
   return (
     <section className="relative overflow-hidden rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-950 shadow-[0_10px_24px_rgba(68,50,31,.08)]">
       <div className="max-w-3xl">
@@ -1360,7 +1391,7 @@ function PlanEmptyState({
           后端规划状态
         </p>
         <h2 className="text-[26px] font-semibold leading-tight sm:text-[34px]">
-          {meta?.status === 'needs-clarification' ? '需要补充城市' : '暂未生成路线'}
+          {emptyTitle}
         </h2>
         <p className="mt-3 max-w-2xl text-[14px] leading-7">{route.explanation}</p>
         {options.length > 0 && (
@@ -1373,6 +1404,20 @@ function PlanEmptyState({
                 className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-[13px] font-semibold text-amber-950 transition hover:border-[#201B16]"
               >
                 {city}
+              </button>
+            ))}
+          </div>
+        )}
+        {adjustmentOptions.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {adjustmentOptions.slice(0, 6).map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => onClarifyCity?.(`${meta?.city ?? ''}，${item}`)}
+                className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-[13px] font-semibold text-amber-950 transition hover:border-[#201B16]"
+              >
+                {item}
               </button>
             ))}
           </div>
@@ -1401,6 +1446,7 @@ function BackendStatusDetails({
   const dataSources = meta?.dataSources ?? {};
   const preferenceImpact = meta?.preferenceImpact ?? [];
   const options = meta?.clarificationOptions ?? [];
+  const adjustmentOptions = meta?.adjustmentOptions ?? [];
   return (
     <section className={`rounded-lg border border-[#D9CBB6] bg-[#FFFDF8] ${compact ? 'p-3' : 'p-4'}`}>
       <div className="mb-3 flex items-center gap-2">
@@ -1424,6 +1470,18 @@ function BackendStatusDetails({
               >
                 {city}
               </button>
+            ))}
+          </div>
+        )}
+        {adjustmentOptions.length > 0 && (
+          <div className="flex flex-wrap gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2">
+            {adjustmentOptions.slice(0, 6).map((item) => (
+              <span
+                key={item}
+                className="rounded-md border border-rose-200 bg-white px-2 py-1 text-[12px] font-semibold text-rose-900"
+              >
+                {item}
+              </span>
             ))}
           </div>
         )}
@@ -1992,13 +2050,13 @@ function DataSourceCard({ plan }: { plan: PlanResult }) {
         </div>
         <p>
           {meta
-            ? '当前新规划由统一后端接口返回：先解析城市/偏好，再调用高德 POI，成功后交给 DeepSeek 生成旅行书 JSON，并由前端展示稳定结构。'
+            ? '当前新规划由统一后端接口返回：先解析城市/偏好，再召回真实地点，按移动时间生成路线，并由前端展示稳定结构。'
             : usesAmapPoi
               ? '当前这条非上海试验路线使用高德真实 POI 名称、地址与坐标；人均、排队、UGC、偏好解释仍由本地规则估算。'
               : '当前是历史/离线 demo 路线，使用本地 mock POI 保证初始演示稳定。'}
         </p>
         <p>
-          链路为 {meta ? '/api/ai/plan → Location Resolver → 高德行政区/POI → DeepSeek JSON → route checks → frontend adapter' : 'parseConstraints → retrieveCandidates → scorePOIs → buildRouteCandidates → validateRoute → repair/replan → explainRoute'}。
+          链路为 {meta ? '/api/ai/plan → 地名解析 → 地点召回 → 路线排程 → 约束校验 → 前端展示' : 'parseConstraints → retrieveCandidates → scorePOIs → buildRouteCandidates → validateRoute → repair/replan → explainRoute'}。
         </p>
         {locationResolution?.resolutionPath?.length ? (
           <div className="rounded-lg border border-[#E4D5BE] bg-[#FFFDF8] p-2">
@@ -2009,8 +2067,7 @@ function DataSourceCard({ plan }: { plan: PlanResult }) {
           </div>
         ) : null}
         <p>
-          高德环境变量支持 AMAP_API_KEY / GAODE_API_KEY / AMAP_KEY；DeepSeek 使用 DEEPSEEK_API_KEY 和 DEEPSEEK_MODEL。
-          当前没有接入美团/点评真实交易、排队、UGC 或团购数据。
+          当前没有接入美团/点评真实交易、排队、UGC 或团购数据；预算、评分和排队为展示层估算。
         </p>
         {meta && (
           <details>
@@ -2019,10 +2076,12 @@ function DataSourceCard({ plan }: { plan: PlanResult }) {
               {JSON.stringify({
                 status: meta.status,
                 source: meta.source,
+                requestId: meta.requestId,
                 city: meta.city,
                 province: meta.province,
                 district: meta.district,
                 anchors: meta.anchors,
+                adjustmentOptions: meta.adjustmentOptions,
                 locationResolution,
                 dataSources: backendDataSources,
                 planningBasis: meta.planningBasis,

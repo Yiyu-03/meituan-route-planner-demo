@@ -1,14 +1,21 @@
 import { getAmapKey, resolveLocation } from '../lib/locationResolver.js';
+import { createPlannerLogger, newRequestId } from '../lib/plannerLogger.js';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const AMAP_BASE_URL = 'https://restapi.amap.com/v3';
 const DEFAULT_MODEL = 'deepseek-v4-pro';
-const DEEPSEEK_TIMEOUT_MS = 7500;
-const AMAP_POI_TIMEOUT_MS = 3200;
-const AMAP_ROUTE_TIMEOUT_MS = 900;
+const DEEPSEEK_TIMEOUT_MS = 6000;
+const AMAP_POI_TIMEOUT_MS = 4500;
+const AMAP_ROUTE_TIMEOUT_MS = 1600;
+const HARD_MAX_LEG_MINUTES = 45;
+const HARD_MAX_LEG_DISTANCE_M = 12000;
+const HARD_MAX_TOTAL_MOVE_MINUTES = 100;
+const TARGET_POI_COUNT = 16;
 
 const SHANGHAI_POI_RE = /人民广场|上海博物馆|南京东路|外滩|田子坊|新天地|豫园|静安寺|陆家嘴/;
-const BLOCKED_POI_RE = /KTV|量贩|歌厅|舞厅|夜店|酒吧|洗浴|按摩|足浴|会所|棋牌|麻将|网吧|酒店|宾馆|停车场|写字楼|小区|住宅|政府机构|学校|幼儿园|公交站|地铁站|出入口|入口|售票处/i;
+const BLOCKED_POI_RE = /KTV|量贩|歌厅|舞厅|夜店|酒吧|洗浴|按摩|足浴|会所|棋牌|麻将|网吧|酒店|宾馆|停车场|写字楼|小区|住宅|政府机构|学校|幼儿园|医院|门诊|诊所|药店|人力资源|人才市场|便民服务|派出所|法院|银行|ATM|加油站|公交站|地铁站|出入口|入口|售票处|朋友圈|四个朋友/i;
+const NON_LOCATION_HINT_RE = /同性|都是男|都是女|男的|女的|朋友|同学|同事|家人|对象|预算|人均|上午|下午|晚上|打算|带他|带她|带TA|想去|想吃|逛逛|玩一下|以内|左右|出发|到达|小时|分钟/;
+const GENERIC_POI_HINT_RE = /^(古镇|古街|老街|餐厅|中餐厅|特色小吃|景点|公园|商场|购物中心|博物馆|展览馆|历史文化|咖啡|茶饮|街区|夜景|景区|自然风光)$/;
 
 function send(res, code, payload) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -42,12 +49,36 @@ function asNumber(value, fallback) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+function formatClock(hourValue) {
+  const normalized = ((hourValue % 24) + 24) % 24;
+  const hour = Math.floor(normalized);
+  const minute = Math.round((normalized - hour) * 60);
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
 function amapKey() {
   return getAmapKey();
 }
 
 function stripCitySuffix(name) {
   return asText(name).replace(/(市|地区|自治州|州|盟)$/, '');
+}
+
+function isUsefulLocationHint(value) {
+  const text = asText(value);
+  if (!text || text.length < 2) return false;
+  if (NON_LOCATION_HINT_RE.test(text)) return false;
+  return true;
+}
+
+function sanitizeLocationResolution(locationResolution) {
+  const anchors = (locationResolution.anchors ?? []).filter(isUsefulLocationHint);
+  const poiHints = (locationResolution.poiHints ?? []).filter(isUsefulLocationHint);
+  return {
+    ...locationResolution,
+    anchors,
+    poiHints,
+  };
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 3000) {
@@ -116,17 +147,81 @@ function requestText(body) {
 }
 
 function parseStartTime(raw) {
-  const m = raw.match(/(\d{1,2})\s*点/);
+  const m = raw.match(/(?:(上午|早上|中午|下午|晚上|晚间|夜里)\s*)?(\d{1,2})(?:[:：](\d{2}))?\s*点?/);
   if (m) {
-    let hour = Number(m[1]);
-    if (/下午|晚上/.test(raw) && hour <= 9) hour += 12;
-    return hour;
+    let hour = Number(m[2]);
+    const minute = Number(m[3] ?? 0);
+    const period = m[1] ?? '';
+    if (/下午|晚上|晚间|夜里/.test(period) && hour <= 11) hour += 12;
+    if (/中午/.test(period) && hour < 11) hour += 12;
+    if (!period && /下午|晚上/.test(raw) && hour <= 9) hour += 12;
+    return hour + minute / 60;
   }
   if (/上午|早上/.test(raw)) return 10;
   if (/中午/.test(raw)) return 12;
   if (/下午/.test(raw)) return 14;
   if (/晚上|晚/.test(raw)) return 18.5;
   return 10;
+}
+
+function parseClockHint(rawHour, context = '') {
+  let hour = Number(rawHour);
+  if (!Number.isFinite(hour)) return null;
+  if (/下午|晚上|晚间|夜里|晚饭后/.test(context) && hour <= 11) hour += 12;
+  if (/中午/.test(context) && hour < 11) hour += 12;
+  return hour;
+}
+
+function parseDuration(raw, startTime) {
+  const matched = [];
+  const explicitHour = raw.match(/(?:玩|逛|待|安排|规划)?\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*小时/);
+  if (explicitHour) {
+    const hours = Number(explicitHour[1]);
+    if (Number.isFinite(hours) && hours > 0) {
+      const durationMin = Math.max(90, Math.min(720, Math.round(hours * 60)));
+      matched.push(`时长${hours}小时`);
+      return {
+        durationMin,
+        source: 'explicit_duration',
+        targetEndTime: startTime + durationMin / 60,
+        matched,
+      };
+    }
+  }
+
+  const endPattern = raw.match(/(?:到|逛到|玩到|安排到)\s*(上午|早上|中午|下午|晚上|晚间|夜里)?\s*(\d{1,2})(?:[:：](\d{2}))?\s*点/);
+  if (endPattern) {
+    let end = parseClockHint(endPattern[2], endPattern[1] ?? raw);
+    if (end != null) {
+      end += Number(endPattern[3] ?? 0) / 60;
+      if (end <= startTime) end += 12;
+      const durationMin = Math.max(90, Math.min(720, Math.round((end - startTime) * 60)));
+      matched.push(`到${formatClock(end)}结束`);
+      return { durationMin, source: 'explicit_end_time', targetEndTime: end, matched };
+    }
+  }
+
+  if (/一天|整天|玩一天|一整天/.test(raw)) {
+    matched.push('玩一天');
+    return { durationMin: 480, source: 'full_day', targetEndTime: startTime + 8, matched };
+  }
+  if (/半天/.test(raw)) {
+    matched.push('半天');
+    return { durationMin: 240, source: 'half_day', targetEndTime: startTime + 4, matched };
+  }
+  if (/(下午|白天).*(晚上|夜)|逛到晚上|玩到晚上/.test(raw)) {
+    matched.push('下午到晚上');
+    const durationMin = Math.max(240, Math.round((20 - startTime) * 60));
+    return { durationMin, source: 'day_to_evening', targetEndTime: startTime + durationMin / 60, matched };
+  }
+  if (/晚饭前/.test(raw)) {
+    matched.push('晚饭前');
+    const durationMin = Math.max(150, Math.round((18 - startTime) * 60));
+    return { durationMin, source: 'before_dinner', targetEndTime: startTime + durationMin / 60, matched };
+  }
+
+  const durationMin = startTime >= 18 ? 240 : 300;
+  return { durationMin, source: 'default', targetEndTime: startTime + durationMin / 60, matched };
 }
 
 function parseBudget(raw) {
@@ -170,10 +265,14 @@ function buildConstraints(raw, locationResolution) {
   const budget = parseBudget(raw);
   const prefs = inferTags(raw);
   const mustCategories = inferCategories(raw);
+  const startTime = parseStartTime(raw);
+  const duration = parseDuration(raw, startTime);
   return {
     city: locationResolution.city,
-    startTime: parseStartTime(raw),
-    durationMin: /一天|整天/.test(raw) ? 360 : 300,
+    startTime,
+    durationMin: duration.durationMin,
+    durationSource: duration.source,
+    targetEndTime: duration.targetEndTime,
     party: /一个人|独自|自己/.test(raw) ? 1 : /情侣|两个人/.test(raw) ? 2 : /家人|家庭|带娃/.test(raw) ? 3 : 2,
     budgetPerCapita: budget.budgetPerCapita,
     diningBudgetPerCapita: budget.diningBudgetPerCapita,
@@ -185,7 +284,7 @@ function buildConstraints(raw, locationResolution) {
     transport: /少走路|近一点|不要太累/.test(raw) ? 'walk' : 'mixed',
     pace: /轻松|慢慢|不要太累/.test(raw) ? 'relaxed' : /多逛|多玩/.test(raw) ? 'packed' : 'normal',
     raw,
-    matched: [...(locationResolution.matched ?? []), ...prefs, ...mustCategories].filter(Boolean),
+    matched: [...(locationResolution.matched ?? []), ...duration.matched, ...prefs, ...mustCategories].filter(Boolean),
   };
 }
 
@@ -195,9 +294,18 @@ function keywordsFor(raw, constraints, locationResolution) {
   if (district && /古镇|古街|老街/.test(raw)) words.add(`${district} 古镇`);
   if (district && /万象汇/.test(raw)) words.add(`${district} 万象汇`);
   if (district && /吃|美食|午饭|晚饭|餐厅/.test(raw)) words.add(`${district} 餐厅`);
-  for (const hint of locationResolution.poiHints ?? []) words.add(hint);
+  for (const hint of locationResolution.poiHints ?? []) {
+    if (isUsefulLocationHint(hint)) words.add(hint);
+  }
   for (const anchor of locationResolution.anchors ?? []) {
-    if (anchor && anchor !== locationResolution.district && !/(省|市|区|县|旗)$/.test(anchor)) words.add(anchor);
+    if (isUsefulLocationHint(anchor) && anchor !== locationResolution.district && !/(省|市|区|县|旗)$/.test(anchor)) words.add(anchor);
+  }
+  if (/逛|玩|闲逛|citywalk|散步/.test(raw)) {
+    const scope = district || constraints.city;
+    words.add(`${scope} 景点`);
+    words.add(`${scope} 公园`);
+    words.add(`${scope} 博物馆`);
+    words.add(`${scope} 商场`);
   }
   if (/吃|美食|午饭|晚饭|餐厅|肉串|烧烤/.test(raw)) {
     words.add(`${constraints.city} 餐厅`);
@@ -240,12 +348,19 @@ function categoryFor(text) {
   return 'culture';
 }
 
+function isLowQualityPoiName(name, text) {
+  if (/朋友圈|四个朋友|朋友之家|交友|婚恋|相亲/.test(name)) return true;
+  if (/仅销售|批发|公司|工作室|摄影工作室|培训|托管|维修|门店|营业厅|服务中心|卫生院|卫生室|委员会|办事处/.test(text) && !/博物馆|景区|公园|古镇|餐饮|餐厅|咖啡|商场|购物中心/.test(text)) return true;
+  return false;
+}
+
 function normalizeAmapPoi(item, index) {
   const loc = parseLocation(item.location);
   if (!loc || !item.name) return null;
   const text = `${item.name} ${item.type || ''} ${item.address || ''}`;
   if (/(省|市|区|县|旗)$/.test(item.name) && /地名地址信息|行政地名|普通地名|区县级地名/.test(text)) return null;
   if (BLOCKED_POI_RE.test(text)) return null;
+  if (isLowQualityPoiName(item.name, text)) return null;
   return {
     id: `amap-${index}-${item.location}`,
     name: item.name,
@@ -269,6 +384,19 @@ function isPoiInResolvedLocation(poi, constraints, locationResolution) {
   const poiProvince = asText(poi.province);
   if (poiCity && expectedCity && poiCity !== expectedCity) return false;
   if (!poiCity && locationResolution.province && poiProvince && poiProvince !== locationResolution.province) return false;
+  const district = asText(locationResolution.district);
+  if (district && poi.area && poi.area !== district) {
+    const text = `${poi.name} ${poi.area ?? ''} ${poi.address ?? ''} ${poi.type ?? ''}`;
+    const strongHints = [...(locationResolution.poiHints ?? []), ...(locationResolution.anchors ?? [])]
+      .map((hint) => asText(hint))
+      .filter((hint) => hint
+        && hint !== expectedCity
+        && hint !== district
+        && hint !== `${expectedCity}${district}`
+        && !GENERIC_POI_HINT_RE.test(hint)
+        && !/(省|市|区|县|旗)$/.test(hint));
+    if (!strongHints.some((hint) => text.includes(hint) || hint.includes(poi.name))) return false;
+  }
   return true;
 }
 
@@ -279,6 +407,7 @@ function scorePoiForPlan(poi, raw, locationResolution, index) {
   if (locationResolution.district && poi.area === locationResolution.district) score += 70;
   if (locationResolution.district && text.includes(locationResolution.district)) score += 30;
   if (locationResolution.district && keyword.includes(locationResolution.district)) score += 12;
+  if (locationResolution.district && poi.area && poi.area !== locationResolution.district) score -= 80;
   for (const hint of locationResolution.poiHints ?? []) {
     if (hint && poi.name.includes(hint)) score += 90;
     else if (hint && text.includes(hint)) score += 45;
@@ -289,6 +418,139 @@ function scorePoiForPlan(poi, raw, locationResolution, index) {
   if (/万象汇/.test(raw) && /万象汇/.test(text)) score += 80;
   if (/住宅|停车场|政府|学校|写字楼|普通地名|地名地址信息/.test(text)) score -= 100;
   return score;
+}
+
+function centerParam(center) {
+  const lng = Number(center?.lng);
+  const lat = Number(center?.lat);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return '';
+  return `${lng},${lat}`;
+}
+
+function poiSeenKey(poi) {
+  return `${poi.name}-${poi.location.lng},${poi.location.lat}`;
+}
+
+function addAmapPoiCandidate({ item, keyword, pois, seen, constraints, locationResolution }) {
+  const poi = normalizeAmapPoi(item, pois.length);
+  if (!poi || !isPoiInResolvedLocation(poi, constraints, locationResolution)) return false;
+  const seenKey = poiSeenKey(poi);
+  if (seen.has(seenKey)) return false;
+  poi.keyword = keyword;
+  seen.add(seenKey);
+  pois.push(poi);
+  return true;
+}
+
+function rankedPoiList(pois, raw, locationResolution) {
+  return pois
+    .map((poi, index) => ({ poi, index, score: scorePoiForPlan(poi, raw, locationResolution, index) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((item) => item.poi)
+    .slice(0, 30);
+}
+
+function hasPoiMatch(pois, pattern) {
+  return pois.some((poi) => pattern.test(`${poi.name} ${poi.address} ${poi.type}`));
+}
+
+async function searchAmapTextPois({ key, keywords, constraints, locationResolution, pois, seen, cityScope, citylimit }) {
+  for (let index = 0; index < keywords.length; index += 2) {
+    const batch = keywords.slice(index, index + 2);
+    await Promise.all(batch.map(async (keyword) => {
+      const params = new URLSearchParams({
+        key,
+        keywords: keyword,
+        city: cityScope,
+        citylimit,
+        offset: '12',
+        page: '1',
+        extensions: 'base',
+      });
+      try {
+        const data = await fetchJsonWithRetry(`${AMAP_BASE_URL}/place/text?${params.toString()}`, AMAP_POI_TIMEOUT_MS, 1);
+        if (data.status !== '1') return;
+        for (const item of data.pois ?? []) {
+          addAmapPoiCandidate({ item, keyword, pois, seen, constraints, locationResolution });
+        }
+      } catch {
+        // One slow keyword must not fail the whole planner.
+      }
+    }));
+    if (pois.length >= TARGET_POI_COUNT) return;
+  }
+}
+
+function aroundKeywordsFor(raw, constraints, locationResolution) {
+  const words = new Set();
+  for (const hint of locationResolution.poiHints ?? []) {
+    if (isUsefulLocationHint(hint) && !/(省|市|区|县|旗)$/.test(hint)) words.add(hint);
+  }
+  if (/万象汇/.test(raw)) words.add('万象汇');
+  if (/古镇|古街|老街/.test(raw)) words.add('古镇');
+  if (/吃|美食|午饭|晚饭|餐厅|肉串|烧烤/.test(raw)) words.add('餐厅');
+  if (/博物馆|文化|历史|展|展馆/.test(raw)) words.add('博物馆');
+  if (/逛|玩|闲逛|citywalk|散步/.test(raw)) ['景点', '公园', '商场'].forEach((item) => words.add(item));
+  if (!words.size) ['景点', '餐厅', '博物馆'].forEach((item) => words.add(item));
+  if (constraints.city) words.add(`${constraints.city} 景点`);
+  return [...words].slice(0, 6);
+}
+
+async function searchAmapAroundPois({ key, raw, constraints, locationResolution, pois, seen }) {
+  const location = centerParam(locationResolution.center);
+  if (!location) return;
+  const keywords = aroundKeywordsFor(raw, constraints, locationResolution);
+  for (let index = 0; index < keywords.length; index += 2) {
+    const batch = keywords.slice(index, index + 2);
+    await Promise.all(batch.map(async (keyword) => {
+      const params = new URLSearchParams({
+        key,
+        location,
+        keywords: keyword,
+        radius: locationResolution.district ? '45000' : '60000',
+        offset: '12',
+        page: '1',
+        extensions: 'base',
+      });
+      try {
+        const data = await fetchJsonWithRetry(`${AMAP_BASE_URL}/place/around?${params.toString()}`, AMAP_POI_TIMEOUT_MS, 1);
+        if (data.status !== '1') return;
+        for (const item of data.pois ?? []) {
+          addAmapPoiCandidate({ item, keyword, pois, seen, constraints, locationResolution });
+        }
+      } catch {
+        // Around search is a fallback; keep the planner moving if it is slow.
+      }
+    }));
+    if (pois.length >= TARGET_POI_COUNT) return;
+  }
+}
+
+async function ensureExplicitPoiCoverage({ key, raw, constraints, locationResolution, pois, seen }) {
+  const tasks = [];
+  const district = asText(locationResolution.district);
+  const city = asText(constraints.city);
+  if (/万象汇/.test(raw) && !hasPoiMatch(pois, /万象汇/)) {
+    tasks.push(...[`${district || city} 万象汇`, `${city} 吴江 万象汇`, '万象汇'].filter(Boolean));
+  }
+  if (/古镇|古街|老街/.test(raw) && !hasPoiMatch(pois, /古镇|古街|老街/)) {
+    tasks.push(...[`${district || city} 古镇`, `${city} 古镇`, '古镇'].filter(Boolean));
+  }
+  const keywords = [...new Set(tasks)].slice(0, 4);
+  if (!keywords.length) return;
+  await searchAmapTextPois({
+    key,
+    keywords,
+    constraints,
+    locationResolution,
+    pois,
+    seen,
+    cityScope: city,
+    citylimit: city ? 'true' : 'false',
+  });
+  if (pois.length < TARGET_POI_COUNT) {
+    await searchAmapAroundPois({ key, raw, constraints, locationResolution, pois, seen });
+  }
 }
 
 async function fetchAmapPois(raw, constraints, locationResolution) {
@@ -307,38 +569,36 @@ async function fetchAmapPois(raw, constraints, locationResolution) {
 
   const seen = new Set();
   const pois = [];
-  await runBatched(keywords, 3, async (keyword) => {
-    const adcodeScope = asText(locationResolution.adcode);
-    const hasAdcodeScope = /^\d{6}$/.test(adcodeScope);
-    const cityScope = hasAdcodeScope ? adcodeScope : constraints.city;
-    const params = new URLSearchParams({
-      key,
-      keywords: keyword,
-      city: cityScope,
-      citylimit: hasAdcodeScope ? 'true' : 'false',
-      offset: '10',
-      page: '1',
-      extensions: 'base',
-    });
-    try {
-      const data = await fetchJsonWithRetry(`${AMAP_BASE_URL}/place/text?${params.toString()}`, AMAP_POI_TIMEOUT_MS);
-      if (data.status !== '1') return;
-      for (const item of data.pois ?? []) {
-        const poi = normalizeAmapPoi(item, pois.length);
-        if (!poi || !isPoiInResolvedLocation(poi, constraints, locationResolution) || seen.has(`${poi.name}-${poi.location.lng},${poi.location.lat}`)) continue;
-        poi.keyword = keyword;
-        seen.add(`${poi.name}-${poi.location.lng},${poi.location.lat}`);
-        pois.push(poi);
-      }
-    } catch {
-      // One slow keyword must not fail the whole planner.
-    }
+  const adcodeScope = asText(locationResolution.adcode);
+  const hasAdcodeScope = /^\d{6}$/.test(adcodeScope);
+  const primaryScope = hasAdcodeScope ? adcodeScope : constraints.city;
+  await searchAmapTextPois({
+    key,
+    keywords: keywords.slice(0, 6),
+    constraints,
+    locationResolution,
+    pois,
+    seen,
+    cityScope: primaryScope,
+    citylimit: primaryScope ? 'true' : 'false',
   });
-  const rankedPois = pois
-    .map((poi, index) => ({ poi, index, score: scorePoiForPlan(poi, raw, locationResolution, index) }))
-    .sort((a, b) => b.score - a.score || a.index - b.index)
-    .map((item) => item.poi)
-    .slice(0, 30);
+  if (pois.length < 8) {
+    await searchAmapAroundPois({ key, raw, constraints, locationResolution, pois, seen });
+  }
+  if (pois.length < 2 && hasAdcodeScope && constraints.city) {
+    await searchAmapTextPois({
+      key,
+      keywords,
+      constraints,
+      locationResolution,
+      pois,
+      seen,
+      cityScope: constraints.city,
+      citylimit: 'true',
+    });
+  }
+  await ensureExplicitPoiCoverage({ key, raw, constraints, locationResolution, pois, seen });
+  const rankedPois = rankedPoiList(pois, raw, locationResolution);
 
   return {
     configured: true,
@@ -378,7 +638,7 @@ async function callDeepSeek(raw, constraints, pois, previousPlan, preferences) {
     constraints,
     preferences: preferences ?? {},
     previousPlan: previousPlan ?? null,
-    poiCandidates: pois.map((poi) => ({
+    poiCandidates: pois.slice(0, 18).map((poi) => ({
       poiId: poi.id,
       name: poi.name,
       category: poi.category,
@@ -392,7 +652,10 @@ async function callDeepSeek(raw, constraints, pois, previousPlan, preferences) {
     rules: [
       '只允许从 poiCandidates 中选择 POI，不要编造候选外地点。',
       '显式城市、区域、预算、活动兴趣优先于画像。',
-      '如果是新疆但用户未指定具体城市，说明默认使用乌鲁木齐。',
+      '同性朋友、都是男的、普通朋友不能理解成情侣/约会。',
+      '如果 request 指定了时长，summary 和节点理由必须尊重 constraints.durationMin。',
+      '节点 time 可以留空；最终时间轴由后端根据真实移动时间统一排布。',
+      '不要输出任何上游 API 状态、模型故障、JSON 失败、key 配置等内部实现信息。',
       '输出严格 JSON，不要 Markdown。',
     ],
     outputShape: {
@@ -433,6 +696,7 @@ async function callDeepSeek(raw, constraints, pois, previousPlan, preferences) {
       body: JSON.stringify({
         model,
         temperature: 0.2,
+        max_tokens: 2200,
         response_format: { type: 'json_object' },
         messages: [
           {
@@ -453,7 +717,58 @@ async function callDeepSeek(raw, constraints, pois, previousPlan, preferences) {
     const parsed = extractJsonObject(payload?.choices?.[0]?.message?.content);
     return { configured: true, used: true, model, status: 'ok', parsed };
   } catch (error) {
-    return { configured: true, used: false, model, status: 'adapter_error', error: error instanceof Error ? error.message : String(error) };
+    const firstError = error instanceof Error ? error.message : String(error);
+    try {
+      const compactPrompt = {
+        request: raw,
+        constraints: {
+          city: constraints.city,
+          district: constraints.district,
+          startTime: constraints.startTime,
+          durationMin: constraints.durationMin,
+          budgetPerCapita: constraints.budgetPerCapita,
+          prefs: constraints.prefs,
+          mustCategories: constraints.mustCategories,
+        },
+        poiCandidates: pois.slice(0, 12).map((poi) => ({
+          poiId: poi.id,
+          name: poi.name,
+          category: poi.category,
+          area: poi.area,
+          estimatedCost: poi.estimatedCost,
+        })),
+        rules: [
+          '只从 poiCandidates 选择 2-5 个 POI。',
+          '普通朋友不要写成情侣约会。',
+          '只返回 JSON: {"summary":"...","nodes":[{"poiId":"...","reason":"...","estimatedCost":80}],"preferenceImpact":[]}',
+        ],
+      };
+      const { response, data: payload } = await fetchJsonResponseWithTimeout(`${DEEPSEEK_BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.15,
+          max_tokens: 1600,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: '你是路线 JSON 选择器。只能返回严格 JSON。' },
+            { role: 'user', content: JSON.stringify(compactPrompt) },
+          ],
+        }),
+      }, Math.min(4500, DEEPSEEK_TIMEOUT_MS));
+      if (!response.ok) {
+        return { configured: true, used: false, model, status: 'upstream_error', error: `${response.status} ${response.statusText}` };
+      }
+      const parsed = extractJsonObject(payload?.choices?.[0]?.message?.content);
+      return { configured: true, used: true, model, status: 'ok-retry', parsed };
+    } catch (retryError) {
+      const retryMessage = retryError instanceof Error ? retryError.message : String(retryError);
+      return { configured: true, used: false, model, status: 'adapter_error', error: `${firstError}; retry:${retryMessage}` };
+    }
   }
 }
 
@@ -470,10 +785,17 @@ function matchPoi(node, pois) {
     ?? null;
 }
 
-function selectNodes(parsed, pois) {
+function maxStopsForConstraints(constraints) {
+  if (constraints.durationMin >= 540) return 6;
+  if (constraints.durationMin >= 420) return 5;
+  return 4;
+}
+
+function selectNodes(parsed, pois, constraints) {
   const rawNodes = Array.isArray(parsed?.nodes) ? parsed.nodes : Array.isArray(parsed?.plan?.nodes) ? parsed.plan.nodes : [];
   const used = new Set();
   const selected = [];
+  const maxStops = maxStopsForConstraints(constraints);
   for (const node of rawNodes) {
     const poi = matchPoi(node, pois);
     if (!poi || used.has(poi.id)) continue;
@@ -484,7 +806,7 @@ function selectNodes(parsed, pois) {
       name: poi.name,
       category: poi.category,
       time: asText(node?.time, ''),
-      reason: asText(node?.reason, '由 DeepSeek 基于高德候选和用户偏好选择。'),
+      reason: sanitizePublicText(node?.reason, '根据真实地点候选和用户偏好选择。'),
       estimatedCost: node?.estimatedCost == null ? poi.estimatedCost : asNumber(node.estimatedCost, poi.estimatedCost),
       address: poi.address,
       type: poi.type,
@@ -494,14 +816,14 @@ function selectNodes(parsed, pois) {
       reviews: poi.reviews,
     });
   }
-  if (selected.length >= 2) return selected.slice(0, 5);
-  return pois.slice(0, Math.min(4, pois.length)).map((poi) => ({
+  if (selected.length >= 2) return selected.slice(0, maxStops);
+  return pois.slice(0, Math.min(maxStops, pois.length)).map((poi) => ({
     id: poi.id,
     poiId: poi.id,
     name: poi.name,
     category: poi.category,
     time: '',
-    reason: 'DeepSeek 未返回足够可匹配节点，使用高德候选顺序兜底。',
+    reason: '已使用高德真实候选做保守规划，可重试优化排序。',
     estimatedCost: poi.estimatedCost,
     address: poi.address,
     type: poi.type,
@@ -564,7 +886,7 @@ function bestPoiForHint(hint, pois, district) {
   return scored[0]?.poi ?? null;
 }
 
-function ensureHintCoverage(raw, nodes, pois, locationResolution) {
+function ensureHintCoverage(raw, nodes, pois, locationResolution, constraints) {
   const required = [];
   const used = new Set(nodes.map((node) => node.poiId ?? node.id));
   for (const hint of orderedPoiHints(raw, locationResolution.poiHints ?? [])) {
@@ -575,34 +897,65 @@ function ensureHintCoverage(raw, nodes, pois, locationResolution) {
     required.push(nodeFromPoi(poi, `用户明确提到「${hint}」，已从高德候选中补入。`));
   }
   if (!required.length) return nodes;
-  return [...required, ...nodes.filter((node) => !required.some((requiredNode) => requiredNode.poiId === node.poiId))].slice(0, 5);
+  return [...required, ...nodes.filter((node) => !required.some((requiredNode) => requiredNode.poiId === node.poiId))]
+    .slice(0, maxStopsForConstraints(constraints));
 }
 
-function fallbackNodesFromPois(raw, pois) {
+function fallbackNodesFromPois(raw, pois, constraints) {
   const selected = [];
   const used = new Set();
-  const pick = (predicate, reason) => {
-    const poi = pois.find((item) => !used.has(item.id) && predicate(item));
+  const maxStops = maxStopsForConstraints(constraints);
+  const targetStops = constraints.durationMin >= 540 ? Math.min(4, maxStops) : maxStops;
+  const distanceToSelected = (poi) => {
+    if (!selected.length) return 0;
+    return Math.min(...selected.map((node) => haversineM(poi.location, node.location)));
+  };
+  const pick = (predicate, reason, options = {}) => {
+    let candidates = pois.filter((item) => !used.has(item.id) && predicate(item));
+    if (selected.length && options.nearM) {
+      const nearby = candidates.filter((item) => distanceToSelected(item) <= options.nearM);
+      if (nearby.length) candidates = nearby;
+    }
+    if (options.preferNearest && selected.length) {
+      candidates = candidates
+        .map((poi, index) => ({ poi, index, distance: distanceToSelected(poi) }))
+        .sort((a, b) => a.distance - b.distance || a.index - b.index)
+        .map((item) => item.poi);
+    }
+    const poi = candidates[0];
     if (!poi) return;
     used.add(poi.id);
     selected.push(nodeFromPoi(poi, reason));
   };
 
+  if (/万象汇/.test(raw)) {
+    pick((poi) => /万象汇/.test(`${poi.name} ${poi.address} ${poi.type}`), '用户明确提到万象汇，优先覆盖这个锚点。');
+  }
   if (/吃|美食|午饭|晚饭|餐厅|肉串|烧烤/.test(raw)) {
-    pick((poi) => poi.category === 'dining', '用户有明确用餐需求，优先选择当前城市高德餐饮候选。');
+    pick((poi) => poi.category === 'dining', '用户有明确用餐需求，优先选择当前区域附近的高德餐饮候选。', { nearM: 1800, preferNearest: true });
+  }
+  if (/古镇|古街|老街/.test(raw)) {
+    pick((poi) => /古镇|古街|老街|历史文化|旅游景区/.test(`${poi.name} ${poi.type} ${poi.address}`), '用户明确想去古镇/古街，已补入同城真实候选。', { nearM: 16000, preferNearest: true });
   }
   if (/博物馆|博物院|文化|历史|展|展馆/.test(raw)) {
-    pick((poi) => /博物馆|博物院|历史|文化|展览|纪念馆/.test(`${poi.name} ${poi.type} ${poi.address}`), '用户明确想逛博物馆/文化点，已从高德候选中补入。');
+    pick((poi) => /博物馆|博物院|历史|文化|展览|纪念馆/.test(`${poi.name} ${poi.type} ${poi.address}`), '用户明确想逛博物馆/文化点，已从高德候选中补入。', { nearM: 9000, preferNearest: true });
   }
   if (/大巴扎|市集|逛|玩|打卡/.test(raw)) {
-    pick((poi) => /大巴扎|景区|公园|街区|旅游|风景|购物/.test(`${poi.name} ${poi.type} ${poi.address}`), '补入适合逛玩的高德候选点。');
+    pick((poi) => /大巴扎|景区|公园|街区|旅游|风景|购物/.test(`${poi.name} ${poi.type} ${poi.address}`), '补入适合逛玩的高德候选点。', { nearM: 7000, preferNearest: true });
   }
 
   for (const poi of pois) {
-    if (selected.length >= 4) break;
+    if (selected.length >= targetStops) break;
+    if (used.has(poi.id)) continue;
+    if (selected.length && distanceToSelected(poi) > 7000) continue;
+    used.add(poi.id);
+    selected.push(nodeFromPoi(poi, '已使用高德真实候选做保守规划，可重试优化排序。'));
+  }
+  for (const poi of pois) {
+    if (selected.length >= Math.min(maxStops, 3)) break;
     if (used.has(poi.id)) continue;
     used.add(poi.id);
-    selected.push(nodeFromPoi(poi, 'DeepSeek 暂不可用，使用高德候选顺序保守补足路线。'));
+    selected.push(nodeFromPoi(poi, '已使用高德真实候选做保守规划，可重试优化排序。'));
   }
   return selected;
 }
@@ -620,53 +973,264 @@ function haversineM(a, b) {
 function fallbackLeg(from, to) {
   const distanceM = Math.max(15, Math.round(haversineM(from.location, to.location)));
   const walkMinutes = Math.max(1, Math.round(distanceM / 80));
+  const driveMinutes = Math.max(8, Math.round((distanceM * 1.25) / 360 + 6));
+  const useWalk = walkMinutes <= 25 && distanceM <= 2200;
   return {
-    mode: walkMinutes <= 25 ? 'walk' : 'transit',
-    minutes: walkMinutes <= 25 ? walkMinutes : Math.min(45, Math.max(12, Math.round(walkMinutes * 0.35))),
+    mode: useWalk ? 'walk' : 'transit',
+    minutes: useWalk ? walkMinutes : driveMinutes,
     distanceM,
-    text: walkMinutes <= 25 ? `步行约${walkMinutes}分钟` : `车程约${Math.min(45, Math.max(12, Math.round(walkMinutes * 0.35)))}分钟`,
+    text: useWalk ? `步行约${walkMinutes}分钟` : `车程约${driveMinutes}分钟`,
     source: 'estimated',
+    confidence: useWalk ? 0.6 : 0.42,
   };
 }
 
-async function amapLeg(key, from, to) {
-  if (!key) return fallbackLeg(from, to);
+function createRouteStats() {
+  return {
+    configured: Boolean(amapKey()),
+    used: false,
+    status: 'not_needed',
+    requested: 0,
+    ok: 0,
+    fallback: 0,
+    longLegs: 0,
+  };
+}
+
+function noteRouteStats(stats, leg, requested = true) {
+  if (!stats) return;
+  if (requested) stats.requested += 1;
+  if (leg.source === 'amap') {
+    stats.used = true;
+    stats.ok += 1;
+    stats.status = 'ok';
+  } else {
+    stats.fallback += 1;
+    if (stats.status !== 'ok') stats.status = stats.configured ? 'estimated' : 'not_configured';
+  }
+  if (leg.minutes > HARD_MAX_LEG_MINUTES || leg.distanceM > HARD_MAX_LEG_DISTANCE_M) stats.longLegs += 1;
+}
+
+async function amapWalkingLeg(key, from, to) {
   const params = new URLSearchParams({
     key,
     origin: `${from.location.lng},${from.location.lat}`,
     destination: `${to.location.lng},${to.location.lat}`,
   });
-  try {
-    const { data } = await fetchJsonResponseWithTimeout(`${AMAP_BASE_URL}/direction/walking?${params.toString()}`, {}, AMAP_ROUTE_TIMEOUT_MS);
-    const path = data.route?.paths?.[0];
-    const distanceM = Math.round(Number(path?.distance ?? 0));
-    const minutes = Math.round(Number(path?.duration ?? 0) / 60);
-    if (data.status === '1' && distanceM > 0 && minutes > 0 && minutes <= 45 && distanceM <= 12000) {
-      return {
-        mode: minutes <= 25 ? 'walk' : 'transit',
-        minutes,
-        distanceM,
-        text: minutes <= 25 ? `步行约${minutes}分钟` : `车程约${minutes}分钟`,
-        source: 'amap',
-      };
-    }
-  } catch {
-    // fall through
+  const { data } = await fetchJsonResponseWithTimeout(`${AMAP_BASE_URL}/direction/walking?${params.toString()}`, {}, AMAP_ROUTE_TIMEOUT_MS);
+  const path = data?.route?.paths?.[0];
+  const distanceM = Math.round(Number(path?.distance ?? 0));
+  const minutes = Math.round(Number(path?.duration ?? 0) / 60);
+  if (data?.status === '1' && distanceM > 0 && minutes > 0 && minutes <= 45 && distanceM <= 5000) {
+    return {
+      mode: 'walk',
+      minutes,
+      distanceM,
+      text: `步行约${minutes}分钟`,
+      source: 'amap',
+      confidence: 0.88,
+    };
   }
-  return fallbackLeg(from, to);
+  return null;
 }
 
-async function attachLegs(nodes) {
+async function amapDrivingLeg(key, from, to) {
+  const params = new URLSearchParams({
+    key,
+    origin: `${from.location.lng},${from.location.lat}`,
+    destination: `${to.location.lng},${to.location.lat}`,
+    strategy: '10',
+    extensions: 'base',
+  });
+  const { data } = await fetchJsonResponseWithTimeout(`${AMAP_BASE_URL}/direction/driving?${params.toString()}`, {}, AMAP_ROUTE_TIMEOUT_MS);
+  const path = data?.route?.paths?.[0];
+  const distanceM = Math.round(Number(path?.distance ?? 0));
+  const minutes = Math.round(Number(path?.duration ?? 0) / 60);
+  if (data?.status === '1' && distanceM > 0 && minutes > 0) {
+    return {
+      mode: 'transit',
+      minutes,
+      distanceM,
+      text: `车程约${minutes}分钟`,
+      source: 'amap',
+      confidence: 0.82,
+    };
+  }
+  return null;
+}
+
+async function amapLeg(key, from, to, stats) {
+  let leg = null;
+  if (key) {
+    const directDistance = haversineM(from.location, to.location);
+    try {
+      if (directDistance <= 2600) leg = await amapWalkingLeg(key, from, to);
+      if (!leg) leg = await amapDrivingLeg(key, from, to);
+    } catch {
+      // fall through to conservative estimate
+    }
+  }
+  leg = leg ?? fallbackLeg(from, to);
+  noteRouteStats(stats, leg, Boolean(key));
+  return leg;
+}
+
+async function attachLegs(nodes, stats) {
   const key = amapKey();
   const output = [];
   for (let i = 0; i < nodes.length; i += 1) {
     if (i === 0) {
       output.push({ ...nodes[i], moveFromPrev: null });
     } else {
-      output.push({ ...nodes[i], moveFromPrev: await amapLeg(key, nodes[i - 1], nodes[i]) });
+      output.push({ ...nodes[i], moveFromPrev: await amapLeg(key, nodes[i - 1], nodes[i], stats) });
     }
   }
   return output;
+}
+
+function stayMinutesForNode(node, raw) {
+  const text = `${node.name} ${node.type ?? ''} ${node.address ?? ''}`;
+  if (node.category === 'dining') return /午饭|午餐|吃饭|正餐/.test(raw) ? 80 : 65;
+  if (node.category === 'cafe') return 50;
+  if (node.category === 'shopping') return /万象汇|商场|购物中心|大巴扎/.test(text) ? 75 : 60;
+  if (node.category === 'entertainment') return 85;
+  if (/古镇|古街|老街|景区|风景区|公园|湿地|西湖|东湖|岳麓|鼓浪屿/.test(text)) return 120;
+  return 90;
+}
+
+function distributeExtraStay(stays, nodes, extraMin) {
+  let remaining = Math.max(0, Math.round(extraMin));
+  const priorities = nodes
+    .map((node, index) => {
+      const text = `${node.name} ${node.type ?? ''} ${node.address ?? ''}`;
+      const cap = node.category === 'dining'
+        ? 100
+        : /古镇|古街|老街|景区|公园|湿地|湖|山/.test(text)
+          ? 210
+          : node.category === 'shopping'
+            ? 130
+            : 160;
+      const priority = /古镇|古街|老街|景区|公园|湿地|湖|山/.test(text) ? 3 : node.category === 'culture' ? 2 : 1;
+      return { index, cap, priority };
+    })
+    .sort((a, b) => b.priority - a.priority);
+
+  while (remaining > 0) {
+    let changed = false;
+    for (const item of priorities) {
+      if (remaining <= 0) break;
+      const room = Math.max(0, item.cap - stays[item.index]);
+      if (!room) continue;
+      const add = Math.min(room, remaining, 30);
+      stays[item.index] += add;
+      remaining -= add;
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  if (remaining > 0 && stays.length) {
+    stays[stays.length - 1] += remaining;
+  }
+  return stays;
+}
+
+function scheduleNodes(nodes, constraints) {
+  if (!nodes.length) return nodes;
+  const raw = constraints.raw ?? '';
+  const stays = nodes.map((node) => stayMinutesForNode(node, raw));
+  const legMinutes = nodes.reduce((sum, node) => sum + Math.max(0, Math.round(node.moveFromPrev?.minutes ?? 0)), 0);
+  const targetStay = Math.max(0, constraints.durationMin - legMinutes);
+  const baseStay = stays.reduce((sum, item) => sum + item, 0);
+  const adjustedStays = distributeExtraStay([...stays], nodes, targetStay - baseStay);
+
+  let clock = constraints.startTime;
+  return nodes.map((node, index) => {
+    if (index > 0) clock += Math.max(0, (node.moveFromPrev?.minutes ?? 0) / 60);
+    const arrive = clock;
+    const depart = arrive + adjustedStays[index] / 60;
+    clock = depart;
+    return {
+      ...node,
+      time: `${formatClock(arrive)}-${formatClock(depart)}`,
+      scheduledStayMinutes: adjustedStays[index],
+    };
+  });
+}
+
+function routeEndTime(nodes, constraints) {
+  if (!nodes.length) return constraints.startTime;
+  const last = nodes[nodes.length - 1];
+  const end = asText(last.time).split(/[-–—]/)[1];
+  const match = end?.match(/(\d{1,2})[:：](\d{2})/);
+  if (!match) return constraints.startTime;
+  let hour = Number(match[1]) + Number(match[2]) / 60;
+  if (hour < constraints.startTime - 1) hour += 24;
+  return hour;
+}
+
+function totalMoveMinutes(nodes) {
+  return nodes.reduce((sum, node) => sum + Math.max(0, Math.round(node.moveFromPrev?.minutes ?? 0)), 0);
+}
+
+function routeCost(nodes) {
+  return nodes.reduce((sum, node) => sum + Math.max(0, Math.round(node.estimatedCost ?? 0)), 0);
+}
+
+function publicPlanningWarning(kind) {
+  if (kind === 'llm_fallback') return '已使用保守规划，可重试优化。';
+  if (kind === 'adjustment') return '当前方案仍需调整，可选择少去几个点、换近一点或提高预算。';
+  return '当前方案已做基础校验。';
+}
+
+function sanitizePublicText(text, fallback = '') {
+  const value = asText(text, fallback);
+  if (!value) return fallback;
+  if (/DeepSeek|API key|JSON|模型|上游|adapter|llm|token|鉴权/i.test(value)) {
+    return fallback || '已使用保守规划，可重试优化。';
+  }
+  return value;
+}
+
+function buildAdjustmentOptions(validation) {
+  const options = [];
+  if (validation.longLegs.length || validation.totalMoveTooLong) {
+    options.push('换近一点', '少去几个点');
+  }
+  if (validation.overBudget) options.push('便宜一点', '提高预算');
+  if (validation.shortByMin > 45) options.push('延长停留', '增加近处备选');
+  if (!options.length) options.push('重新优化', '少去几个点', '换近一点');
+  return [...new Set(options)].slice(0, 5);
+}
+
+function validatePlannedNodes(nodes, constraints) {
+  const longLegs = nodes
+    .filter((node) => node.moveFromPrev && (node.moveFromPrev.minutes > HARD_MAX_LEG_MINUTES || node.moveFromPrev.distanceM > HARD_MAX_LEG_DISTANCE_M))
+    .map((node) => ({
+      name: node.name,
+      minutes: node.moveFromPrev.minutes,
+      distanceM: node.moveFromPrev.distanceM,
+      source: node.moveFromPrev.source,
+    }));
+  const moveMin = totalMoveMinutes(nodes);
+  const endTime = routeEndTime(nodes, constraints);
+  const targetEnd = constraints.startTime + constraints.durationMin / 60;
+  const cost = routeCost(nodes);
+  const overBudget = constraints.budgetPerCapita != null && cost > constraints.budgetPerCapita * 1.15;
+  const shortByMin = Math.max(0, Math.round((targetEnd - endTime) * 60));
+  const totalMoveTooLong = moveMin > HARD_MAX_TOTAL_MOVE_MINUTES;
+  const status = longLegs.length || totalMoveTooLong || overBudget || shortByMin > 90 ? 'needs-adjustment' : 'ok';
+  return {
+    status,
+    longLegs,
+    totalMoveTooLong,
+    overBudget,
+    shortByMin,
+    totalMoveMin: moveMin,
+    endTime,
+    targetEnd,
+    cost,
+    adjustmentOptions: buildAdjustmentOptions({ longLegs, totalMoveTooLong, overBudget, shortByMin }),
+  };
 }
 
 function normalizeAgentLoop(value, fallback = []) {
@@ -682,6 +1246,7 @@ function normalizeAgentLoop(value, fallback = []) {
 
 function baseResponse(body, status, source, locationResolution, constraints, warnings, extra = {}) {
   return {
+    requestId: body.__requestId,
     status,
     source,
     city: locationResolution?.city ?? null,
@@ -706,23 +1271,24 @@ function noDataResponse(body, status, source, locationResolution, constraints, w
     plan: {
       summary: status === 'needs-clarification'
         ? (locationResolution?.message ?? '请指定城市或区域。')
-        : `暂未生成${locationResolution?.city ?? '当前城市'}路线：真实 POI/API 数据不足，请检查高德 API key、DeepSeek API key 或稍后重试。`,
+        : `暂未生成${locationResolution?.city ?? '当前城市'}路线：当前真实地点数据不足，请换一个更具体的区域或稍后重试。`,
       nodes: [],
     },
     clarificationOptions: locationResolution?.clarificationOptions ?? [],
     agentLoop: normalizeAgentLoop(null, [
       { step: 'location-resolver', action: '高德行政区/POI 解析城市、区域和锚点', result: locationResolution?.city ? `识别为${locationResolution.city}` : '需要补充城市' },
-      { step: 'tool-use', action: '准备调用高德 POI 与 DeepSeek', result: '缺少必要数据或配置，停止生成路线' },
+      { step: 'tool-use', action: '准备地点召回与路线生成', result: '缺少足够真实地点，停止生成路线' },
       { step: 'validator', action: '阻止错误城市 fallback', result: '未返回上海 mock 路线' },
     ]),
     planningBasis: {
       agentLoop: '自然语言解析后先检查城市和工具配置；缺少真实 POI 时不生成错误城市路线。',
-      dataSource: '没有可用真实 POI 或 DeepSeek 结果。',
+      dataSource: '没有足够可用真实地点结果。',
       mockServer: '未使用非上海 mock 路线。',
       validator: 'fallback-no-data 不会作为正常路线展示。',
     },
     dataSources,
-    preferenceImpact: ['用户偏好已解析，但因真实 POI/API 数据不足，未进入路线排序。'],
+    adjustmentOptions: status === 'needs-adjustment' ? ['换更具体地点', '少去几个点', '稍后重试'] : [],
+    preferenceImpact: ['用户偏好已解析，但因真实地点数据不足，未进入路线排序。'],
   });
 }
 
@@ -778,12 +1344,12 @@ function mockShanghaiResponse(body, locationResolution, constraints, warning, da
     },
     agentLoop: [
       { step: 'intent', action: '识别城市', result: '用户明确输入上海' },
-      { step: 'fallback', action: '高德或 DeepSeek 不可用', result: '使用上海演示 mock' },
+      { step: 'fallback', action: '真实地点或智能排序暂不可用', result: '使用上海演示路线' },
       { step: 'validator', action: '限制 fallback 范围', result: '仅上海请求允许 mock-shanghai-demo' },
     ],
     planningBasis: {
       agentLoop: '上海明确请求允许演示 fallback。',
-      dataSource: '本响应未使用真实高德/DeepSeek 生成路线。',
+      dataSource: '本响应使用上海演示路线，没有调用真实地点路线生成。',
       mockServer: '使用 mock-shanghai-demo。',
       validator: '非上海请求不会使用上海 mock。',
     },
@@ -793,18 +1359,35 @@ function mockShanghaiResponse(body, locationResolution, constraints, warning, da
 }
 
 export default async function handler(req, res) {
+  const requestId = newRequestId();
+  const logger = createPlannerLogger(requestId);
   if (req.method === 'OPTIONS') return send(res, 204, {});
   if (req.method !== 'POST') {
     return send(res, 405, { status: 'method_not_allowed', message: 'Use POST /api/ai/plan' });
   }
 
   const body = readBody(req);
+  body.__requestId = requestId;
   const raw = requestText(body);
   if (!raw) {
+    logger.warn('route_plan_bad_request', { status: 'bad_request' });
     return send(res, 400, { status: 'bad_request', source: 'fallback-no-data', warnings: ['request is required'] });
   }
+  logger.info('route_plan_request', {
+    userId: scopedHistory(body.userId, body.sessionId).userId,
+    sessionId: scopedHistory(body.userId, body.sessionId).sessionId,
+    requestLength: raw.length,
+  });
 
-  const locationResolution = await resolveLocation(raw);
+  const locationResolution = sanitizeLocationResolution(await resolveLocation(raw));
+  logger.info('location_resolution', {
+    status: locationResolution.status,
+    city: locationResolution.city,
+    province: locationResolution.province,
+    district: locationResolution.district,
+    anchors: locationResolution.anchors,
+    confidence: locationResolution.confidence,
+  });
   const resolverSources = locationResolution.dataSources ?? {};
   if (locationResolution.status === 'needs-clarification') {
     return send(res, 200, noDataResponse(
@@ -843,8 +1426,25 @@ export default async function handler(req, res) {
   const constraints = buildConstraints(raw, locationResolution);
   const previousPlan = body.previousPlan ?? null;
   const warnings = [];
+  const routeStats = createRouteStats();
+  logger.info('constraints_parsed', {
+    city: constraints.city,
+    startTime: constraints.startTime,
+    durationMin: constraints.durationMin,
+    durationSource: constraints.durationSource,
+    budgetPerCapita: constraints.budgetPerCapita,
+    diningBudgetPerCapita: constraints.diningBudgetPerCapita,
+    prefs: constraints.prefs,
+    mustCategories: constraints.mustCategories,
+  });
 
   const amap = await fetchAmapPois(raw, constraints, locationResolution);
+  logger.info('amap_poi_result', {
+    configured: amap.configured,
+    status: amap.status,
+    poiCount: amap.pois.length,
+    keywords: amap.keywords,
+  });
   const baseDataSources = {
     amapDistrict: resolverSources.amapDistrict ?? { configured: Boolean(amapKey()), used: false, status: 'not_needed' },
     amapPoi: {
@@ -854,30 +1454,42 @@ export default async function handler(req, res) {
       keywords: amap.keywords,
       resolverUsed: Boolean(resolverSources.amapPoi?.used),
     },
+    amapRoute: routeStats,
     deepseek: { configured: Boolean(process.env.DEEPSEEK_API_KEY?.trim()), used: false, model: process.env.DEEPSEEK_MODEL?.trim() || DEFAULT_MODEL, status: 'pending' },
     mock: { used: false },
   };
 
   if (!amap.configured || amap.pois.length < 2) {
-    const reason = !amap.configured ? '高德 API key 未配置。' : '高德没有返回足够真实 POI。';
+    const reason = !amap.configured ? '真实地点服务暂未配置。' : '没有返回足够真实地点。';
     if (canUseShanghaiMock(raw, locationResolution)) {
       return send(res, 200, mockShanghaiResponse(body, locationResolution, constraints, reason, {
         ...baseDataSources,
         mock: { used: true, scope: 'shanghai-only' },
       }));
     }
+    const noPoiStatus = amap.configured ? 'needs-adjustment' : 'fallback-no-data';
     return send(res, 200, noDataResponse(
       body,
-      'fallback-no-data',
+      noPoiStatus,
       'fallback-no-data',
       locationResolution,
       constraints,
-      [reason, `当前城市真实 POI 数据不足，未返回上海 mock。`],
-      baseDataSources,
+      [reason, '当前城市真实地点数据不足，请换更具体地点或稍后重试。'],
+      {
+        ...baseDataSources,
+        deepseek: { ...baseDataSources.deepseek, used: false, status: 'not_needed' },
+      },
     ));
   }
 
   const deepseek = await callDeepSeek(raw, constraints, amap.pois, previousPlan, body.preferences);
+  logger.info('deepseek_result', {
+    configured: deepseek.configured,
+    used: deepseek.used,
+    status: deepseek.status,
+    model: deepseek.model,
+    error: deepseek.error,
+  });
   const dataSources = {
     ...baseDataSources,
     amapPoi: { ...baseDataSources.amapPoi, used: true, status: 'ok', poiCount: amap.pois.length },
@@ -885,43 +1497,64 @@ export default async function handler(req, res) {
   };
 
   if (!deepseek.used || !deepseek.parsed) {
-    const reason = deepseek.configured ? `DeepSeek 调用失败或 JSON 不合规:${deepseek.error ?? deepseek.status}` : 'DeepSeek API key 未配置。';
+    const internalReason = deepseek.configured ? `llm_unavailable:${deepseek.status}` : 'llm_not_configured';
+    const publicWarning = publicPlanningWarning('llm_fallback');
     if (canUseShanghaiMock(raw, locationResolution)) {
-      return send(res, 200, mockShanghaiResponse(body, locationResolution, constraints, reason, {
+      return send(res, 200, mockShanghaiResponse(body, locationResolution, constraints, publicWarning, {
         ...dataSources,
         mock: { used: true, scope: 'shanghai-only' },
       }));
     }
-    let fallbackNodes = ensureHintCoverage(raw, fallbackNodesFromPois(raw, amap.pois), amap.pois, locationResolution);
+    let fallbackNodes = ensureHintCoverage(raw, fallbackNodesFromPois(raw, amap.pois, constraints), amap.pois, locationResolution, constraints);
     if (fallbackNodes.length >= 2) {
-      fallbackNodes = await attachLegs(fallbackNodes);
-      return send(res, 200, baseResponse(body, 'ok', 'amap-fallback', locationResolution, constraints, [reason], {
+      fallbackNodes = scheduleNodes(await attachLegs(fallbackNodes, routeStats), constraints);
+      const validation = validatePlannedNodes(fallbackNodes, constraints);
+      const status = validation.status;
+      const responseWarnings = status === 'needs-adjustment'
+        ? [publicPlanningWarning('adjustment')]
+        : [publicWarning];
+      logger.info('route_validation', {
+        status,
+        source: 'amap-fallback',
+        nodeCount: fallbackNodes.length,
+        totalMoveMin: validation.totalMoveMin,
+        endTime: validation.endTime,
+        targetEnd: validation.targetEnd,
+        longLegs: validation.longLegs,
+        overBudget: validation.overBudget,
+        internalReason,
+      });
+      return send(res, 200, baseResponse(body, status, 'amap-fallback', locationResolution, constraints, responseWarnings, {
         model: deepseek.model,
         plan: {
-          summary: `${locationResolution.city}路线已先用高德真实 POI 生成；DeepSeek 暂时没有返回可用 JSON。`,
+          summary: status === 'needs-adjustment'
+            ? `${locationResolution.city}路线已用真实地点生成，但当前时间、预算或移动距离需要你选择调整。`
+            : `${locationResolution.city}路线已用真实地点做保守规划，可重试优化排序。`,
           nodes: fallbackNodes,
         },
+        adjustmentOptions: status === 'needs-adjustment' ? validation.adjustmentOptions : [],
         candidates: amap.pois,
         agentLoop: [
           { step: 'location-resolver', action: '高德行政区/POI/地理编码解析城市和锚点', result: `${locationResolution.city}${locationResolution.anchors?.length ? `/${locationResolution.anchors.join('、')}` : ''}` },
           { step: 'tool-use', action: '调用高德 POI 搜索', result: `获取 ${amap.pois.length} 个候选` },
-          { step: 'llm-plan', action: 'DeepSeek 生成旅行书 JSON', result: reason },
-          { step: 'validator', action: '使用高德候选保守兜底', result: `${fallbackNodes.length} 个节点，未使用 mock` },
+          { step: 'route-plan', action: '按真实移动时间排布路线', result: `${fallbackNodes.length} 个节点，预计 ${formatClock(validation.endTime)} 结束` },
+          { step: 'validator', action: '校验预算、移动距离和总时长', result: status === 'needs-adjustment' ? '需要用户选择调整' : '通过' },
         ],
         planningBasis: {
-          agentLoop: '解析需求 → 高德召回 → DeepSeek 尝试 → DeepSeek 不可用时使用高德候选保守路线。',
+          agentLoop: '解析需求 → 高德召回 → 后端按真实移动时间生成保守路线 → validator 检查。',
           dataSource: 'POI 名称、地址、坐标来自高德 Web 服务；价格/评分为估算。',
           mockServer: '未使用 mock fallback。',
-          validator: '只允许使用当前解析城市下的高德候选 POI，并阻止错城 POI。',
+          validator: '检查单段移动、总移动、预算和目标时长；不可兼得时返回调整选项。',
         },
         dataSources,
-        preferenceImpact: ['显式城市/区域和活动偏好决定高德关键词与路线节点；DeepSeek 暂不可用时不阻断路线展示。'],
+        preferenceImpact: ['显式城市/区域和活动偏好决定地点召回与路线节点；保守规划不会暴露内部状态。'],
       }));
     }
-    return send(res, 200, noDataResponse(body, 'fallback-no-data', 'fallback-no-data', locationResolution, constraints, [reason, `已获取 ${amap.pois.length} 个高德候选，但未生成可展示路线。`], dataSources));
+    logger.warn('route_plan_no_nodes', { source: 'amap-fallback', poiCount: amap.pois.length, internalReason });
+    return send(res, 200, noDataResponse(body, 'fallback-no-data', 'fallback-no-data', locationResolution, constraints, [publicWarning, `已获取 ${amap.pois.length} 个真实候选，但未生成可展示路线。`], dataSources));
   }
 
-  let nodes = ensureHintCoverage(raw, selectNodes(deepseek.parsed, amap.pois), amap.pois, locationResolution);
+  let nodes = ensureHintCoverage(raw, selectNodes(deepseek.parsed, amap.pois, constraints), amap.pois, locationResolution, constraints);
   if (nodes.length < 2) {
     return send(res, 200, noDataResponse(
       body,
@@ -929,11 +1562,11 @@ export default async function handler(req, res) {
       'fallback-no-data',
       locationResolution,
       constraints,
-      ['DeepSeek 没有返回足够可匹配高德 POI 的 route nodes。'],
+      ['当前真实候选不足以生成稳定路线，请换一个更具体的区域或稍后重试。'],
       dataSources,
     ));
   }
-  nodes = await attachLegs(nodes);
+  nodes = scheduleNodes(await attachLegs(nodes, routeStats), constraints);
   if (nodes.some((node) => SHANGHAI_POI_RE.test(node.name)) && locationResolution.city !== '上海') {
     return send(res, 200, noDataResponse(
       body,
@@ -945,30 +1578,48 @@ export default async function handler(req, res) {
       dataSources,
     ));
   }
+  const validation = validatePlannedNodes(nodes, constraints);
+  const responseStatus = validation.status;
+  const responseWarnings = responseStatus === 'needs-adjustment'
+    ? [publicPlanningWarning('adjustment')]
+    : warnings;
+  logger.info('route_validation', {
+    status: responseStatus,
+    source: 'amap+deepseek',
+    nodeCount: nodes.length,
+    totalMoveMin: validation.totalMoveMin,
+    endTime: validation.endTime,
+    targetEnd: validation.targetEnd,
+    longLegs: validation.longLegs,
+    overBudget: validation.overBudget,
+  });
 
   const parsed = deepseek.parsed;
-  return send(res, 200, baseResponse(body, 'ok', 'amap+deepseek', locationResolution, constraints, warnings, {
+  return send(res, 200, baseResponse(body, responseStatus, 'amap+deepseek', locationResolution, constraints, responseWarnings, {
     model: deepseek.model,
     plan: {
-      summary: asText(parsed.summary ?? parsed.plan?.summary, `${locationResolution.city}路线已基于高德真实 POI 和 DeepSeek 生成。`),
+      summary: responseStatus === 'needs-adjustment'
+        ? `${locationResolution.city}路线已基于真实地点生成，但当前时间、预算或移动距离需要你选择调整。`
+        : sanitizePublicText(parsed.summary ?? parsed.plan?.summary, `${locationResolution.city}路线已基于真实地点生成。`),
       nodes,
     },
+    adjustmentOptions: responseStatus === 'needs-adjustment' ? validation.adjustmentOptions : [],
     candidates: amap.pois,
     agentLoop: normalizeAgentLoop(parsed.agentLoop, [
       { step: 'location-resolver', action: '高德行政区/POI/地理编码解析城市和锚点', result: `${locationResolution.city}${locationResolution.anchors?.length ? `/${locationResolution.anchors.join('、')}` : ''}` },
       { step: 'tool-use', action: '调用高德 POI 搜索', result: `获取 ${amap.pois.length} 个候选` },
-      { step: 'llm-plan', action: 'DeepSeek 基于候选生成旅行书 JSON', result: `${nodes.length} 个节点` },
-      { step: 'validator', action: '校验节点来源和移动段', result: '通过' },
+      { step: 'route-plan', action: '按真实移动时间排布路线', result: `${nodes.length} 个节点，预计 ${formatClock(validation.endTime)} 结束` },
+      { step: 'validator', action: '校验预算、移动距离和总时长', result: responseStatus === 'needs-adjustment' ? '需要用户选择调整' : '通过' },
     ]),
     planningBasis: {
-      agentLoop: asText(parsed.planningBasis?.agentLoop, '解析需求 → 高德召回 → DeepSeek 排序成书 → validator 检查。'),
-      dataSource: asText(parsed.planningBasis?.dataSource, 'POI 名称、地址、坐标来自高德 Web 服务；价格/评分为估算。'),
-      mockServer: asText(parsed.planningBasis?.mockServer, '未使用 mock fallback。'),
-      validator: asText(parsed.planningBasis?.validator, '仅允许 DeepSeek 选择高德候选 POI，并检查非上海请求不得出现上海 POI。'),
+      agentLoop: sanitizePublicText(parsed.planningBasis?.agentLoop, '解析需求 → 地点召回 → 智能排序 → 后端按真实移动时间排程 → validator 检查。'),
+      dataSource: sanitizePublicText(parsed.planningBasis?.dataSource, 'POI 名称、地址、坐标来自地图服务；价格/评分为估算。'),
+      mockServer: sanitizePublicText(parsed.planningBasis?.mockServer, '未使用演示 fallback。'),
+      validator: sanitizePublicText(parsed.planningBasis?.validator, '仅允许选择真实候选 POI，并检查错城、预算、移动距离和目标时长。'),
     },
     dataSources,
     preferenceImpact: Array.isArray(parsed.preferenceImpact) && parsed.preferenceImpact.length
-      ? parsed.preferenceImpact.slice(0, 6).map((item) => asText(item))
-      : ['显式城市/区域和活动偏好决定高德关键词与路线节点；画像只影响语气与排序。'],
+      ? parsed.preferenceImpact.slice(0, 6).map((item) => sanitizePublicText(item, '用户偏好影响地点召回、排序和停留节奏。'))
+      : ['显式城市/区域和活动偏好决定地点召回与路线节点；画像只影响语气与排序。'],
   }));
 }

@@ -1,6 +1,6 @@
 const AMAP_BASE_URL = 'https://restapi.amap.com/v3';
-const DISTRICT_TIMEOUT_MS = 2600;
-const POI_TIMEOUT_MS = 3000;
+const DISTRICT_TIMEOUT_MS = 1600;
+const POI_TIMEOUT_MS = 2200;
 
 const MUNICIPALITIES = new Set(['北京市', '上海市', '天津市', '重庆市']);
 const CITY_SUFFIX_RE = /(市|地区|自治州|州|盟)$/;
@@ -82,6 +82,40 @@ const PROVINCE_ALIASES = {
   澳门特别行政区: '澳门特别行政区',
 };
 
+const LOCAL_CITY_PROVINCE = {
+  北京: '北京市',
+  上海: '上海市',
+  天津: '天津市',
+  重庆: '重庆市',
+  杭州: '浙江省',
+  宁波: '浙江省',
+  绍兴: '浙江省',
+  温州: '浙江省',
+  苏州: '江苏省',
+  南京: '江苏省',
+  武汉: '湖北省',
+  长沙: '湖南省',
+  厦门: '福建省',
+  西安: '陕西省',
+  成都: '四川省',
+  广州: '广东省',
+  深圳: '广东省',
+  乌鲁木齐: '新疆维吾尔自治区',
+  北屯: '新疆维吾尔自治区',
+};
+
+const LOCAL_DISTRICT_PARENT = {
+  吴江区: { city: '苏州', province: '江苏省' },
+  余杭区: { city: '杭州', province: '浙江省' },
+  西湖区: { city: '杭州', province: '浙江省' },
+  海淀区: { city: '北京', province: '北京市' },
+  朝阳区: { city: '北京', province: '北京市' },
+  洪山区: { city: '武汉', province: '湖北省' },
+  武昌区: { city: '武汉', province: '湖北省' },
+  江汉区: { city: '武汉', province: '湖北省' },
+  岳麓区: { city: '长沙', province: '湖南省' },
+};
+
 const ALIAS_REPLACEMENTS = [
   { re: /西湿地公园/g, from: '西湿地公园', to: '西溪湿地公园' },
   { re: /西湿地/g, from: '西湿地', to: '西溪湿地公园' },
@@ -106,6 +140,7 @@ const GENERIC_POI_WORDS = new Set([
 
 const BAD_POI_RE = /酒店|宾馆|停车场|政府|学校|小区|住宅|写字楼|产业园|售楼|服务区|收费站|KTV|夜总会|洗浴|足浴|按摩/i;
 const WEAK_POI_HINT_RE = /^(?:周边|附近|边上|旁边|边上的|附近的|旁边的)?(?:古镇|老街|古街|公园|博物馆|景点|景区|商场|万象汇|美食|餐厅)$/;
+const NON_LOCATION_HINT_RE = /同性|都是男|都是女|男的|女的|朋友|同学|同事|家人|对象|预算|人均|上午|下午|晚上|打算|带他|带她|想去|想吃|逛逛|玩一下|以内|左右|出发|到达|小时|分钟|轻松|慢慢|不要太累/;
 
 const districtCache = new Map();
 const poiCache = new Map();
@@ -126,6 +161,11 @@ function uniq(values) {
 function asString(value) {
   if (Array.isArray(value)) return value.find((item) => typeof item === 'string' && item.trim()) ?? '';
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function isUsefulHint(value) {
+  const text = asString(value);
+  return text.length >= 2 && !NON_LOCATION_HINT_RE.test(text);
 }
 
 function stripCitySuffix(name) {
@@ -180,7 +220,7 @@ function sleep(ms) {
 
 async function fetchAmapJson(url, timeoutMs) {
   let lastError = null;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const data = await fetchJson(url, timeoutMs);
       if (data?.infocode === '10021' || /EXCEEDED_THE_LIMIT/i.test(asString(data?.info))) {
@@ -190,7 +230,7 @@ async function fetchAmapJson(url, timeoutMs) {
       return data;
     } catch (error) {
       lastError = error;
-      if (attempt < 2) await sleep(260 + attempt * 260);
+      if (attempt < 1) await sleep(220 + attempt * 220);
     }
   }
   throw lastError ?? new Error('Amap request failed');
@@ -487,13 +527,14 @@ export function extractLocationHints(rawInput) {
 
   const expandedAdminHints = adminHints.flatMap((item) => expandAdminHint(item));
   const explicitAdminHints = explicitAdminSelections(text);
-  const adminCandidates = uniq(expandedAdminHints).filter((item) => !GENERIC_POI_WORDS.has(item));
+  const adminCandidates = uniq(expandedAdminHints)
+    .filter((item) => isUsefulHint(item) && !GENERIC_POI_WORDS.has(item) && !isWeakPoiHint(item));
   const explicitProvinceContext = adminCandidates.filter((item) => {
     const province = PROVINCE_ALIASES[item];
     return province && !MUNICIPALITIES.has(province);
   });
   const adminSet = new Set(explicitAdminHints.length ? uniq([...explicitAdminHints, ...explicitProvinceContext]) : adminCandidates);
-  const poiSet = new Set(uniq(poiHints).filter((item) => !GENERIC_POI_WORDS.has(item)));
+  const poiSet = new Set(uniq(poiHints).filter((item) => isUsefulHint(item) && !GENERIC_POI_WORDS.has(item)));
 
   for (const item of adminSet) {
     if (poiSet.has(item)) poiSet.delete(item);
@@ -556,6 +597,58 @@ function provinceChildEvidenceFromHints(province, hints) {
     };
   }
   return null;
+}
+
+function localExplicitResolution(hints, resolutionPath, warnings) {
+  const allHints = uniq([hints.normalizedText, ...hints.adminHints, ...hints.poiHints]);
+  const joined = allHints.join(' ');
+  const district = Object.keys(LOCAL_DISTRICT_PARENT)
+    .find((name) => allHints.some((hint) => asString(hint).includes(name)) || joined.includes(name));
+  if (district) {
+    const parent = LOCAL_DISTRICT_PARENT[district];
+    const extraAnchors = hints.adminHints
+      .filter((hint) => hint !== district && stripCitySuffix(hint) !== parent.city && isUsefulHint(hint));
+    resolutionPath.push('local explicit admin fallback');
+    warnings.push(`高德行政区查询不稳定，已按显式区县「${district}」兜底到${parent.city}。`);
+    return {
+      status: 'resolved',
+      city: parent.city,
+      province: parent.province,
+      district,
+      adcode: null,
+      citycode: null,
+      center: null,
+      anchors: uniq([district, ...extraAnchors, ...hints.poiHints]).filter(isUsefulHint),
+      poiHints: uniq([...extraAnchors, ...hints.poiHints]).filter(isUsefulHint),
+      matched: uniq([district, `${district}=>${parent.city}`, parent.city]),
+      confidence: 0.72,
+      resolutionPath,
+      warnings,
+    };
+  }
+
+  const city = Object.keys(LOCAL_CITY_PROVINCE)
+    .find((name) => allHints.some((hint) => stripCitySuffix(hint) === name || asString(hint).includes(name)) || joined.includes(name));
+  if (!city) return null;
+  const extraAnchors = hints.adminHints
+    .filter((hint) => stripCitySuffix(hint) !== city && !asString(hint).includes(`${city}`) && isUsefulHint(hint));
+  resolutionPath.push('local explicit city fallback');
+  warnings.push(`高德行政区查询不稳定，已按显式城市「${city}」兜底。`);
+  return {
+    status: 'resolved',
+    city,
+    province: LOCAL_CITY_PROVINCE[city],
+    district: null,
+    adcode: null,
+    citycode: null,
+    center: null,
+    anchors: uniq([...extraAnchors, ...hints.poiHints]).filter(isUsefulHint),
+    poiHints: uniq([...extraAnchors, ...hints.poiHints]).filter(isUsefulHint),
+    matched: uniq([city]),
+    confidence: 0.68,
+    resolutionPath,
+    warnings,
+  };
 }
 
 async function normalizeAdminDistrict(keyword, district) {
@@ -793,8 +886,7 @@ export async function resolveLocation(rawInput) {
   const districtStatuses = [];
 
   if (hints.adminHints.length) {
-    const adminResults = [];
-    for (const hint of hints.adminHints) {
+    const adminResults = await Promise.all(hints.adminHints.map(async (hint) => {
       const lookup = await districtLookup(hint, 1);
       sourceUsage.amapDistrict.used = sourceUsage.amapDistrict.used || lookup.used;
       districtStatuses.push(lookup.status);
@@ -806,12 +898,11 @@ export async function resolveLocation(rawInput) {
         warnings.push(`高德行政区查询「${hint}」返回不稳定，已使用省级名称兜底。`);
       }
       if (!first) {
-        adminResults.push(null);
-        continue;
+        return null;
       }
       const normalized = await normalizeAdminDistrict(hint, first);
-      adminResults.push(normalized);
-    }
+      return normalized;
+    }));
     for (const item of adminResults) {
       if (!item) continue;
       matched.push(item.keyword === item.matched ? item.matched : `${item.keyword}=>${item.matched}`);
@@ -840,7 +931,10 @@ export async function resolveLocation(rawInput) {
     .sort((a, b) => a.length - b.length)[0] ?? null;
   const poiResults = [];
 
-  const poiHintsForInference = hints.poiHints.filter((hint) => cityHint || provinceHint || !isWeakPoiHint(hint));
+  const hasStrongAdminCity = Boolean(cityHint && adminEvidence.some((item) => item.kind === 'city' || item.kind === 'district'));
+  const poiHintsForInference = hasStrongAdminCity
+    ? []
+    : hints.poiHints.filter((hint) => cityHint || provinceHint || !isWeakPoiHint(hint));
 
   if (poiHintsForInference.length) {
     resolutionPath.push('poi reverse city inference');
@@ -855,7 +949,7 @@ export async function resolveLocation(rawInput) {
     }
     const statuses = poiResults.flatMap((item) => [item.placeStatus, item.inputtipsStatus, item.geocodeStatus]).filter(Boolean);
     sourceUsage.amapPoi.status = statuses.includes('ok') ? 'ok' : statuses.find((status) => status === 'error') ?? 'empty';
-  } else if (hints.poiHints.length) {
+  } else if (hints.poiHints.length && !hasStrongAdminCity && !hints.adminHints.length) {
     warnings.push('已忽略缺少城市上下文的泛地点描述，避免用“古镇/商场”等泛词误判城市。');
   }
 
@@ -869,7 +963,7 @@ export async function resolveLocation(rawInput) {
       citycode: null,
       center: null,
       anchors: [],
-      poiHints: hints.poiHints,
+      poiHints: hints.poiHints.filter(isUsefulHint),
       matched,
       confidence: 0,
       resolutionPath,
@@ -879,7 +973,16 @@ export async function resolveLocation(rawInput) {
     };
   }
 
+  const localFallback = localExplicitResolution(hints, [...resolutionPath], [...warnings]);
   const chosen = chooseCity(adminEvidence, provinceHint);
+  if (localFallback?.city && chosen?.city && chosen.city !== localFallback.city) {
+    return {
+      ...localFallback,
+      warnings: [...(localFallback.warnings ?? []), `POI 反推城市「${chosen.city}」与显式行政区冲突，已优先采用显式输入。`],
+      dataSources: sourceUsage,
+      normalizedInput: hints.normalizedText,
+    };
+  }
   if (chosen?.city) {
     const cityInfo = mergeCityInfo(chosen, preferredDistrictHint);
     const districts = uniq([
@@ -889,7 +992,7 @@ export async function resolveLocation(rawInput) {
         .map((item) => item.district),
     ]);
     const adminAnchors = anchorHintsFromAdminHints(hints.adminHints, cityInfo, provinceOnly, adminEvidence);
-    const anchors = uniq([...districts, ...adminAnchors, ...hints.poiHints]);
+    const anchors = uniq([...districts, ...adminAnchors, ...hints.poiHints]).filter(isUsefulHint);
     const confidence = Math.max(0.55, Math.min(0.98, chosen.score / Math.max(1, chosen.items.length)));
     matched.push(cityInfo.city);
     return {
@@ -901,11 +1004,19 @@ export async function resolveLocation(rawInput) {
       citycode: cityInfo.citycode,
       center: cityInfo.center,
       anchors,
-      poiHints: hints.poiHints,
+      poiHints: hints.poiHints.filter(isUsefulHint),
       matched: uniq(matched),
       confidence: +confidence.toFixed(2),
       resolutionPath,
       warnings,
+      dataSources: sourceUsage,
+      normalizedInput: hints.normalizedText,
+    };
+  }
+
+  if (localFallback) {
+    return {
+      ...localFallback,
       dataSources: sourceUsage,
       normalizedInput: hints.normalizedText,
     };
@@ -923,7 +1034,7 @@ export async function resolveLocation(rawInput) {
       citycode: null,
       center: province.center,
       anchors: [],
-      poiHints: hints.poiHints,
+      poiHints: hints.poiHints.filter(isUsefulHint),
       matched: uniq(matched),
       confidence: 0.52,
       resolutionPath,
@@ -944,7 +1055,7 @@ export async function resolveLocation(rawInput) {
     citycode: null,
     center: null,
     anchors: [],
-    poiHints: hints.poiHints,
+    poiHints: hints.poiHints.filter(isUsefulHint),
     matched: uniq(matched),
     confidence: 0.2,
     resolutionPath,
