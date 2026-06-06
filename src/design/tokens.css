@@ -1,0 +1,111 @@
+/* ============================================================
+   漫游·手帐 / Stroll · Shanghai — v2 design tokens (spec §5)
+   暖纸 + 墨黑 + 朱砂红;横格纸纹 + 颗粒噪点 + 胶带 + 印章;拍立得照片。
+   ============================================================ */
+
+/* Fonts: 霞鹜文楷(标题/手写感) · Fraunces(拉丁/数字,斜体) · Noto Sans SC(正文) */
+@import url('https://chinese-fonts-cdn.deno.dev/packages/lxgwwenkai/dist/LXGWWenKai-Regular/result.css');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@1,9..144,400;1,9..144,600&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+
+:root {
+  /* palette */
+  --paper-base: #efe7d4;     /* 暖纸基底 */
+  --paper-card: #fbf6ea;     /* 卡片纸 */
+  --ink: #241f17;            /* 墨黑(正文/三站点之一) */
+  --ink-soft: #5b5040;       /* 次级墨色 */
+  --cinnabar: #bb3a2c;       /* 主强调:朱砂红(印章/marker) */
+  --amber: #bd7c22;          /* 次强调:琥珀 */
+  --sage: #5e7757;           /* 次强调:鼠尾草 */
+  --hairline: rgba(36, 31, 23, 0.14);
+
+  /* type */
+  --font-hand: 'LXGW WenKai', 'Noto Sans SC', serif;   /* 标题/手写感 */
+  --font-latin: 'Fraunces', Georgia, serif;            /* 拉丁字与数字(斜体) */
+  --font-body: 'Noto Sans SC', -apple-system, 'PingFang SC', sans-serif;
+
+  /* materials */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  --paper-lines:
+    linear-gradient(transparent 27px, rgba(36, 31, 23, 0.08) 28px) 0 0 / 100% 28px,
+    linear-gradient(90deg, rgba(187, 58, 44, 0.10) 1px, transparent 1px) 38px 0 / 38px 100%;
+
+  --radius: 6px;
+  --shadow-paper: 0 14px 36px rgba(62, 45, 25, 0.16);
+  --shadow-stamp: 0 1px 0 rgba(36, 31, 23, 0.12);
+}
+
+/* 暖纸 + 横格 + 颗粒噪点 底纹 */
+.paper-surface {
+  background-color: var(--paper-base);
+  background-image: var(--grain), var(--paper-lines);
+  color: var(--ink);
+  font-family: var(--font-body);
+}
+
+.paper-card {
+  background: var(--paper-card);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-paper);
+}
+
+/* 拉丁字/数字用 Fraunces 斜体 */
+.latin {
+  font-family: var(--font-latin);
+  font-style: italic;
+  font-variant-numeric: lining-nums;
+}
+
+/* 手写感标题 */
+.hand {
+  font-family: var(--font-hand);
+  letter-spacing: 0.02em;
+}
+
+/* 胶带:压在拍立得/纸片一角 */
+.tape {
+  position: absolute;
+  width: 64px;
+  height: 22px;
+  background: rgba(189, 124, 34, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+  transform: rotate(-4deg);
+  mix-blend-mode: multiply;
+}
+
+/* 朱砂印章:盖戳质感(品牌 logo + 路线状态 stamp) */
+.stamp {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cinnabar);
+  border: 2px solid var(--cinnabar);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-family: var(--font-hand);
+  letter-spacing: 0.08em;
+  transform: rotate(-6deg);
+  box-shadow: var(--shadow-stamp);
+  opacity: 0.92;
+}
+
+/* 门店真实照片以拍立得样式呈现:白边 + 微旋转 + 压胶带 */
+.polaroid {
+  position: relative;
+  background: #fff;
+  padding: 6px 6px 22px;
+  border: 1px solid var(--hairline);
+  box-shadow: 0 6px 16px rgba(62, 45, 25, 0.2);
+  transform: rotate(-1.6deg);
+}
+.polaroid img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 三站点圆点:墨黑 / 朱砂 / 鼠尾草 — 与地图 pin 对应 */
+.dot-ink { background: var(--ink); }
+.dot-cinnabar { background: var(--cinnabar); }
+.dot-sage { background: var(--sage); }
