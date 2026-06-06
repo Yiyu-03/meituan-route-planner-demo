@@ -1,0 +1,24 @@
+event: stage
+data: {"type":"stage","key":"understand","label":"读懂需求","status":"ok","ms":1400}
+
+event: constraints
+data: {"type":"constraints","constraints":{"city":"上海","district":"静安寺","startTime":14,"durationMin":330,"party":2,"budgetPerCapita":null,"diningBudgetPerCapita":300,"prefs":["quiet"],"avoid":[],"mustCategories":["dining"],"pace":"normal","personaId":"couple","raw":"周末下午在静安找个安静咖啡，再吃顿本帮菜，人均300内"}}
+
+event: stage
+data: {"type":"stage","key":"retrieve","label":"召回","status":"ok","ms":260,"summary":"18 家真实店"}
+
+event: candidates
+data: {"type":"candidates","candidates":[{"poi":{"id":"B0LBRRKLFC","name":"看得到风景的咖啡馆","category":"cafe","city":"上海","area":"静安寺","lat":31.224,"lng":121.443,"rating":4.5,"perCapita":78,"tags":["安静","拍照"],"openHour":9,"closeHour":20,"photos":["https://aos-comment.amap.com/B0LBRRKLFC/comment/444ed6fe82367e685163efc4a02f4a22_2048_2048_80.jpg"],"tel":null,"source":"amap"},"score":82.4,"reasons":["命中你的需求：安静"],"sources":{"rating":"amap","perCapita":"amap","sceneTags":"derived"}}]}
+
+event: route
+data: {"type":"route","route":{"id":"route-0","stops":[{"poi":{"id":"B0LBRRKLFC","name":"看得到风景的咖啡馆","category":"cafe","city":"上海","area":"静安寺","lat":31.224,"lng":121.443,"rating":4.5,"perCapita":78,"tags":["安静"],"openHour":9,"closeHour":20,"photos":[],"tel":null,"source":"amap"},"arrive":14,"depart":15,"legFromPrev":null,"reasons":["命中你的需求：安静"],"sources":{"rating":"amap","perCapita":"amap"}}],"totalCost":78,"totalWalkMin":0,"totalTransitMin":0,"endTime":15,"coverage":["cafe"],"checks":[{"key":"budget","label":"预算","status":"pass","detail":"人均合计 ¥78"}],"explanation":"","risks":[]}}
+
+event: explanation
+data: {"type":"explanation","routeId":"route-0","delta":"先到靠窗的安静咖啡馆坐下，"}
+
+event: explanation
+data: {"type":"explanation","routeId":"route-0","delta":"光线好、适合接电话。"}
+
+event: done
+data: {"type":"done","planId":"plan-demo-1","routes":[{"id":"route-0","stops":[{"poi":{"id":"B0LBRRKLFC","name":"看得到风景的咖啡馆","category":"cafe","city":"上海","area":"静安寺","lat":31.224,"lng":121.443,"rating":4.5,"perCapita":78,"tags":["安静"],"openHour":9,"closeHour":20,"photos":[],"tel":null,"source":"amap"},"arrive":14,"depart":15,"legFromPrev":null,"reasons":["命中你的需求：安静"],"sources":{"rating":"amap","perCapita":"amap"}}],"totalCost":78,"totalWalkMin":0,"totalTransitMin":0,"endTime":15,"coverage":["cafe"],"checks":[],"explanation":"先到靠窗的安静咖啡馆坐下，光线好、适合接电话。","risks":[]}],"dataSources":{"amapPoi":{"configured":true,"used":true,"status":"ok"},"amapRoute":{"configured":true,"used":true,"status":"ok"},"deepseek":{"configured":true,"used":true,"status":"ok"},"cache":{"hits":1,"misses":2}}}
+

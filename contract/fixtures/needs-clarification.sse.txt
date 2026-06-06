@@ -1,0 +1,6 @@
+event: stage
+data: {"type":"stage","key":"understand","label":"读懂需求","status":"ok","ms":1200}
+
+event: error
+data: {"type":"error","code":"needs-clarification","message":"需要补充城市，未默认回上海。","recoverable":true}
+
