@@ -1,5 +1,5 @@
-import { MainDashboard } from './views/MainDashboard';
+import { AuthGate } from './AuthGate'
 
 export default function App() {
-  return <MainDashboard />;
+  return <AuthGate />
 }
