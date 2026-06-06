@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Identity } from '../api/auth'
-import type { PlanRequest } from '../../contract'
+import type { PlanRequest, Route } from '../../contract'
 import { usePlanStream } from '../hooks/usePlanStream'
 import { InputBar, type InputSubmit } from '../components/InputBar'
 import { ProgressTrail } from '../components/ProgressTrail'
@@ -13,10 +13,10 @@ import { AmapProvider } from '../map/AmapProvider'
 import { RouteMap } from '../map/RouteMap'
 import { BrandStamp } from '../design/icons'
 
-const EMPTY_ROUTE = {
+const EMPTY_ROUTE: Route = {
   id: 'empty', stops: [], totalCost: 0, totalWalkMin: 0, totalTransitMin: 0,
   endTime: 0, coverage: [], checks: [], explanation: '', risks: [],
-} as const
+}
 
 export function PlannerView({ identity, onLogout, fixtureOverride }: {
   identity: Identity
