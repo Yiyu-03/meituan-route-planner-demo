@@ -73,16 +73,29 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
     run(request, fixtureOverride ? { fixture: fixtureOverride } : undefined)
   }
 
+  // The route being refined — held in a ref so a clarify round-trip (which restarts the stream and
+  // clears state.route) can still re-refine against the right plan.
+  const refineBase = useRef<Route | null>(null)
+
   const refine = (request: string) => {
-    if (!state.route) return
+    const base = state.route ?? refineBase.current
+    if (!base) return
+    refineBase.current = base
     setThinkMode('refine')
     const payload: PlanRequest = {
       request,
       preferences: { personaPick: 'auto', prefs: [], budgetPref: null },
-      previousPlan: state.route,
+      previousPlan: base,
       baseRequest: lastRequest, // 把初始 query 一起给后端,LLM 才有完整意图上下文
     }
     run(payload, fixtureOverride ? { fixture: fixtureOverride } : undefined)
+  }
+
+  // Answering an agent question: during a refine, the answer IS the clarified edit → re-refine;
+  // otherwise resume the ReAct conversation.
+  const onAnswer = (text: string) => {
+    if (thinkMode === 'refine') refine(text)
+    else answer(text)
   }
 
   const loadFromShelf = (record: HistoryRecord) => {
@@ -188,7 +201,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
 
                 {/* 反问:agent 在等用户回答,朱砂高亮 */}
                 {state.question && (
-                  <AgentQuestion question={state.question} onAnswer={answer} />
+                  <AgentQuestion question={state.question} onAnswer={onAnswer} />
                 )}
 
                 {state.error ? (

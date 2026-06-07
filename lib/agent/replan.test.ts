@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseEditIntent, parseEditIntentLLM, keywordsForEdit } from './replan.js'
+import { parseEditIntent, parseEditIntentLLM, keywordsForEdit, applyEdit } from './replan.js'
 import type { Route, RouteStop, POI } from '../../contract/index.js'
 
 function poi(over: Partial<POI>): POI {
@@ -139,21 +139,44 @@ describe('parseEditIntentLLM', () => {
     expect(op.targetIndex).toBe(1)
   })
 
-  it('never downgrades a stated criterion (便宜) into a plain swap', async () => {
-    // The LLM gap-filler must not erase the user's explicit "更便宜" → swap would pick a pricier place.
-    const op = await parseEditIntentLLM('第二家换便宜点的', prev, {
-      chatJson: async () => ({ op: 'swap', targetIndex: 1, targetCategory: null, newBudget: null }),
-    })
-    expect(op.op).toBe('cheaper')
-    expect(op.targetIndex).toBe(1)
-  })
-
-  it('still lets the LLM swap one criterion for another', async () => {
-    // 便宜 → 评分更高 is a real reinterpretation, not a downgrade, so it is allowed.
+  it('is LLM-first: trusts the model op + targetIndex over the rules', async () => {
+    // The model decides; rules no longer override it. (Real prompt maps 便宜→cheaper, but whatever
+    // the model returns is honoured — grounding in a real POI happens later in applyEdit.)
     const op = await parseEditIntentLLM('第二家换便宜点的', prev, {
       chatJson: async () => ({ op: 'higher_rated', targetIndex: 1, targetCategory: null, newBudget: null }),
     })
     expect(op.op).toBe('higher_rated')
+    expect(op.targetIndex).toBe(1)
+  })
+
+  it('honours the LLM-chosen stop for an unspecified "少一站"', async () => {
+    // user didn't name a stop; the model commits a concrete targetIndex from full context
+    const op = await parseEditIntentLLM('少一站', prev, {
+      chatJson: async () => ({ op: 'remove', targetIndex: 2, targetCategory: null, newBudget: null }),
+    })
+    expect(op.op).toBe('remove')
+    expect(op.targetIndex).toBe(2)
+  })
+})
+
+describe('applyEdit remove without a target', () => {
+  const constraints = { mustCategories: [], raw: '' } as any
+  it('drops a stop even when no index is given (does not no-op)', () => {
+    // 4 stops, 2 of them dining → drops the later redundant dining, leaving 3
+    const five: Route = {
+      ...prev,
+      stops: [
+        stop({ id: 'a', category: 'dining', name: '餐A' }),
+        stop({ id: 'b', category: 'dining', name: '餐B' }),
+        stop({ id: 'c', category: 'cafe', name: '咖' }),
+        stop({ id: 'd', category: 'culture', name: '馆' }),
+      ],
+    }
+    const r = applyEdit({ op: 'remove', targetIndex: null, raw: '少一站' } as any, five, [], constraints)
+    expect(r.changed).toBe(true)
+    expect(r.picks.length).toBe(3)
+    // a redundant dining was dropped (餐B, the later of the two)
+    expect(r.picks.map((p) => p.poi.id)).not.toContain('b')
   })
 })
 

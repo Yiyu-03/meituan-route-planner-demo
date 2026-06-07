@@ -213,6 +213,15 @@ async function* runReplanLoop(
   const op = deps.editChatJson
     ? await parseEditIntentLLM(req.request, previousPlan, { chatJson: deps.editChatJson, baseRequest: req.baseRequest })
     : parseEditIntent(req.request, previousPlan)
+
+  // Ambiguous modification → ask the user to clarify their intent instead of guessing.
+  if (op.op === 'clarify') {
+    yield { type: 'thought', text: `这条修改我不太确定具体想怎么改:${req.request}。先问清楚再动手。` }
+    yield stage('understand', '读懂修改需求', 'ok', { summary: '需要你说清楚' })
+    yield { type: 'question', conversationId: deps.planId(), question: op.question || '你想怎么改这条路线?', ...(op.options ? { options: op.options } : {}) }
+    return
+  }
+
   const constraints = constraintsFromPrev(previousPlan, persona, op)
   const tgtIdx = op.targetIndex ?? (op.targetCategory ? previousPlan.stops.findIndex((s) => s.poi.category === op.targetCategory) : -1)
   const tgtName = tgtIdx >= 0 ? previousPlan.stops[tgtIdx]?.poi.name : null

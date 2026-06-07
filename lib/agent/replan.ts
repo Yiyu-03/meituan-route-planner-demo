@@ -3,13 +3,16 @@ import type { EnrichedPOI, Persona } from './types.js'
 import { distBetween } from './geo.js'
 
 export type EditOpKind =
-  | 'cheaper' | 'closer' | 'higher_rated' | 'swap' | 'remove' | 'add' | 'rebudget'
+  | 'cheaper' | 'closer' | 'higher_rated' | 'swap' | 'remove' | 'add' | 'rebudget' | 'clarify'
 
 export interface EditOp {
   op: EditOpKind
   targetIndex?: number
   targetCategory?: Category
   newBudget?: number
+  /** Only for op==='clarify': what to ask the user + suggested concrete options. */
+  question?: string
+  options?: string[]
   raw: string
 }
 
@@ -123,7 +126,7 @@ export function parseEditIntent(request: string, prev: Route): EditOp {
 // deps pattern as understandLLM.
 // ------------------------------------------------------------
 
-const VALID_OPS: EditOpKind[] = ['cheaper', 'closer', 'higher_rated', 'swap', 'remove', 'add', 'rebudget']
+const VALID_OPS: EditOpKind[] = ['cheaper', 'closer', 'higher_rated', 'swap', 'remove', 'add', 'rebudget', 'clarify']
 const VALID_CATS: Category[] = ['dining', 'cafe', 'culture', 'entertainment', 'shopping', 'nightscape']
 
 export interface EditIntentDeps {
@@ -132,41 +135,59 @@ export interface EditIntentDeps {
   baseRequest?: string
 }
 
-const CRITERION_OPS: EditOpKind[] = ['cheaper', 'closer', 'higher_rated']
-
 function editPrompt(request: string, prev: Route, baseRequest?: string) {
   const stops = prev.stops.map((s, i) => ({
     index: i, category: s.poi.category, name: s.poi.name,
     perCapita: s.poi.perCapita, rating: s.poi.rating,
   }))
   return [
-    { role: 'system', content: '你把用户对已有路线的「改方案」指令解析成结构化 JSON。结合“原始需求 + 当前路线(含人均/评分) + 修改要求”理解意图。只输出 JSON。字段：op(取自 cheaper|closer|higher_rated|swap|remove|add|rebudget) targetIndex(0 起的站序号|null) targetCategory(dining|cafe|culture|entertainment|shopping|nightscape|null) newBudget(number|null，仅 rebudget)。序数“第二/第3/最后一家”对应 targetIndex。“更便宜/省钱”=cheaper，“更近/少走/少打车”=closer，“评分更高/口碑更好”=higher_rated。' },
+    { role: 'system', content: [
+      '你是路线「改方案」的决策者。结合【原始诉求 originalRequest】+【当前路线 currentPlan(每站含 index/类目/人均/评分)】+【用户这次的修改要求 modification】,自己判断该怎么改。只输出 JSON。',
+      '字段:',
+      '- op: cheaper|closer|higher_rated|swap|remove|add|rebudget|clarify',
+      '- **当修改要求含义不明、无法确定要做什么时(例如"改一下/换个别的/不太满意"这种没方向的话),不要硬猜:op 返回 "clarify",并给出 question(用一句话问清用户想怎么改)和 options(2-4 个具体、可直接执行的方向,如"第1站换便宜的"/"去掉最后一站"/"整体换更安静的")。意图清楚时不要用 clarify。**',
+      '- targetIndex: 要改/删的那一站的 0 起序号。**只要 op 作用在某一站上(cheaper/closer/higher_rated/swap/remove),就必须给出具体 targetIndex,绝不返回 null**。用户没点名时,你结合原始诉求自己挑最合理的一站:',
+      '    · "少一站/去掉一站" → 挑与原始诉求最不相关、或同类里最冗余/最贵的那站删;',
+      '    · "换便宜的"没说哪站 → 挑当前最贵或最不必要的那站;',
+      '    · 序数"第二/第3/最后一家"直接对应 targetIndex。',
+      '- targetCategory: 仅 add 时给目标类目(dining|cafe|culture|entertainment|shopping|nightscape),否则 null。',
+      '- newBudget: 仅 rebudget 时给数字。',
+      '语义对应:"更便宜/省钱"=cheaper;"更近/少走/少打车"=closer;"评分更高/口碑更好"=higher_rated;"换一家"=swap;"少一站/去掉/删掉"=remove;"加一站/再来一个"=add;"预算改成X/控制在X内"=rebudget。',
+    ].join('\n') },
     { role: 'user', content: JSON.stringify({ originalRequest: baseRequest ?? null, currentPlan: stops, modification: request }) },
   ]
 }
 
-/** Rules-first edit intent with an optional LLM gap-filler. Always returns a valid op. */
+/**
+ * LLM-first edit intent: the model decides op + which stop (targetIndex) from full context.
+ * Deterministic rules (`parseEditIntent`) are used ONLY as a fallback when the LLM is unavailable
+ * or returns an unusable shape — they don't override the model's decision. Grounding the chosen
+ * change in a REAL retrieved POI happens later in applyEdit (so we never invent a place).
+ */
 export async function parseEditIntentLLM(
   request: string, prev: Route, deps: EditIntentDeps = {},
 ): Promise<EditOp> {
-  const base = parseEditIntent(request, prev)
-  if (!deps.chatJson) return base
+  const fallback = () => parseEditIntent(request, prev)
+  if (!deps.chatJson) return fallback()
 
   let llm: any = null
   try { llm = await deps.chatJson(editPrompt(request, prev, deps.baseRequest)) } catch { llm = null }
-  if (!llm || typeof llm !== 'object') return base
+  if (!llm || typeof llm !== 'object' || !VALID_OPS.includes(llm.op)) return fallback()
 
-  // Never let the LLM downgrade a clearly-stated criterion (便宜/近/高分) into a plain swap.
-  const ruleIsCriterion = CRITERION_OPS.includes(base.op)
-  const op: EditOpKind = ruleIsCriterion && !CRITERION_OPS.includes(llm.op)
-    ? base.op
-    : (VALID_OPS.includes(llm.op) ? llm.op : base.op)
+  // Trust the model's decision; validate shape only.
+  const op: EditOpKind = llm.op
+  // Ambiguous edit → ask the user instead of guessing.
+  if (op === 'clarify') {
+    const question = typeof llm.question === 'string' && llm.question.trim() ? llm.question.trim() : '你想怎么改这条路线?'
+    const options = Array.isArray(llm.options) ? llm.options.map((o: any) => String(o)).filter(Boolean).slice(0, 4) : undefined
+    return { op, question, options, raw: request.trim() }
+  }
   const targetIndex = Number.isInteger(llm.targetIndex) && llm.targetIndex >= 0 && llm.targetIndex < prev.stops.length
     ? llm.targetIndex
-    : base.targetIndex
-  const targetCategory = VALID_CATS.includes(llm.targetCategory) ? llm.targetCategory : base.targetCategory
+    : null
+  const targetCategory = VALID_CATS.includes(llm.targetCategory) ? llm.targetCategory : null
   const newBudget = op === 'rebudget'
-    ? (Number.isFinite(llm.newBudget) ? Number(llm.newBudget) : base.newBudget)
+    ? (Number.isFinite(llm.newBudget) ? Number(llm.newBudget) : parseEditIntent(request, prev).newBudget)
     : undefined
   return { op, targetIndex, targetCategory, newBudget, raw: request.trim() }
 }
@@ -283,6 +304,16 @@ export interface ApplyEditResult {
  * Returns the new pick list (kept stops untouched) plus whether anything changed.
  * Replacement candidates come only from the freshly retrieved `scoredPool`.
  */
+/** Choose which stop to drop for an unspecified "少一站": last stop of an over-represented category, else the last stop. */
+function pickDropIndex(picks: ScoredPOI[]): number {
+  const counts = new Map<string, number>()
+  for (const p of picks) counts.set(p.poi.category, (counts.get(p.poi.category) ?? 0) + 1)
+  for (let i = picks.length - 1; i >= 0; i--) {
+    if ((counts.get(picks[i].poi.category) ?? 0) > 1) return i
+  }
+  return picks.length - 1
+}
+
 export function applyEdit(
   op: EditOp, prev: Route, scoredPool: ScoredPOI[], constraints: Constraints,
 ): ApplyEditResult {
@@ -297,14 +328,17 @@ export function applyEdit(
   }
 
   if (op.op === 'remove') {
-    if (idx == null || idx < 0 || idx >= picks.length) {
-      return { picks, changed: false, note: '没找到要删除的站点，方案保持不变。' }
-    }
     if (picks.length <= 2) {
       return { picks, changed: false, note: '只剩两站，删掉会让行程过短，已保留原站点。' }
     }
-    const removed = picks[idx]
-    picks.splice(idx, 1)
+    // "少一站" 不指定具体站时,自己挑一站删:优先删"重复类目"里靠后的那站(减少冗余),
+    // 没有重复类目就删最后一站。指定了序号/类目则按指定。
+    let dropIdx = idx
+    if (dropIdx == null || dropIdx < 0 || dropIdx >= picks.length) {
+      dropIdx = pickDropIndex(picks)
+    }
+    const removed = picks[dropIdx]
+    picks.splice(dropIdx, 1)
     return { picks, changed: true, note: `已去掉「${removed.poi.name}」这一站。` }
   }
 

@@ -2055,9 +2055,8 @@ function parseEditIntent(request, prev) {
   }
   return { op: "swap", targetIndex: target, targetCategory: cat, raw };
 }
-var VALID_OPS = ["cheaper", "closer", "higher_rated", "swap", "remove", "add", "rebudget"];
+var VALID_OPS = ["cheaper", "closer", "higher_rated", "swap", "remove", "add", "rebudget", "clarify"];
 var VALID_CATS = ["dining", "cafe", "culture", "entertainment", "shopping", "nightscape"];
-var CRITERION_OPS = ["cheaper", "closer", "higher_rated"];
 function editPrompt(request, prev, baseRequest) {
   const stops = prev.stops.map((s, i) => ({
     index: i,
@@ -2067,25 +2066,41 @@ function editPrompt(request, prev, baseRequest) {
     rating: s.poi.rating
   }));
   return [
-    { role: "system", content: "\u4F60\u628A\u7528\u6237\u5BF9\u5DF2\u6709\u8DEF\u7EBF\u7684\u300C\u6539\u65B9\u6848\u300D\u6307\u4EE4\u89E3\u6790\u6210\u7ED3\u6784\u5316 JSON\u3002\u7ED3\u5408\u201C\u539F\u59CB\u9700\u6C42 + \u5F53\u524D\u8DEF\u7EBF(\u542B\u4EBA\u5747/\u8BC4\u5206) + \u4FEE\u6539\u8981\u6C42\u201D\u7406\u89E3\u610F\u56FE\u3002\u53EA\u8F93\u51FA JSON\u3002\u5B57\u6BB5\uFF1Aop(\u53D6\u81EA cheaper|closer|higher_rated|swap|remove|add|rebudget) targetIndex(0 \u8D77\u7684\u7AD9\u5E8F\u53F7|null) targetCategory(dining|cafe|culture|entertainment|shopping|nightscape|null) newBudget(number|null\uFF0C\u4EC5 rebudget)\u3002\u5E8F\u6570\u201C\u7B2C\u4E8C/\u7B2C3/\u6700\u540E\u4E00\u5BB6\u201D\u5BF9\u5E94 targetIndex\u3002\u201C\u66F4\u4FBF\u5B9C/\u7701\u94B1\u201D=cheaper\uFF0C\u201C\u66F4\u8FD1/\u5C11\u8D70/\u5C11\u6253\u8F66\u201D=closer\uFF0C\u201C\u8BC4\u5206\u66F4\u9AD8/\u53E3\u7891\u66F4\u597D\u201D=higher_rated\u3002" },
+    { role: "system", content: [
+      "\u4F60\u662F\u8DEF\u7EBF\u300C\u6539\u65B9\u6848\u300D\u7684\u51B3\u7B56\u8005\u3002\u7ED3\u5408\u3010\u539F\u59CB\u8BC9\u6C42 originalRequest\u3011+\u3010\u5F53\u524D\u8DEF\u7EBF currentPlan(\u6BCF\u7AD9\u542B index/\u7C7B\u76EE/\u4EBA\u5747/\u8BC4\u5206)\u3011+\u3010\u7528\u6237\u8FD9\u6B21\u7684\u4FEE\u6539\u8981\u6C42 modification\u3011,\u81EA\u5DF1\u5224\u65AD\u8BE5\u600E\u4E48\u6539\u3002\u53EA\u8F93\u51FA JSON\u3002",
+      "\u5B57\u6BB5:",
+      "- op: cheaper|closer|higher_rated|swap|remove|add|rebudget|clarify",
+      '- **\u5F53\u4FEE\u6539\u8981\u6C42\u542B\u4E49\u4E0D\u660E\u3001\u65E0\u6CD5\u786E\u5B9A\u8981\u505A\u4EC0\u4E48\u65F6(\u4F8B\u5982"\u6539\u4E00\u4E0B/\u6362\u4E2A\u522B\u7684/\u4E0D\u592A\u6EE1\u610F"\u8FD9\u79CD\u6CA1\u65B9\u5411\u7684\u8BDD),\u4E0D\u8981\u786C\u731C:op \u8FD4\u56DE "clarify",\u5E76\u7ED9\u51FA question(\u7528\u4E00\u53E5\u8BDD\u95EE\u6E05\u7528\u6237\u60F3\u600E\u4E48\u6539)\u548C options(2-4 \u4E2A\u5177\u4F53\u3001\u53EF\u76F4\u63A5\u6267\u884C\u7684\u65B9\u5411,\u5982"\u7B2C1\u7AD9\u6362\u4FBF\u5B9C\u7684"/"\u53BB\u6389\u6700\u540E\u4E00\u7AD9"/"\u6574\u4F53\u6362\u66F4\u5B89\u9759\u7684")\u3002\u610F\u56FE\u6E05\u695A\u65F6\u4E0D\u8981\u7528 clarify\u3002**',
+      "- targetIndex: \u8981\u6539/\u5220\u7684\u90A3\u4E00\u7AD9\u7684 0 \u8D77\u5E8F\u53F7\u3002**\u53EA\u8981 op \u4F5C\u7528\u5728\u67D0\u4E00\u7AD9\u4E0A(cheaper/closer/higher_rated/swap/remove),\u5C31\u5FC5\u987B\u7ED9\u51FA\u5177\u4F53 targetIndex,\u7EDD\u4E0D\u8FD4\u56DE null**\u3002\u7528\u6237\u6CA1\u70B9\u540D\u65F6,\u4F60\u7ED3\u5408\u539F\u59CB\u8BC9\u6C42\u81EA\u5DF1\u6311\u6700\u5408\u7406\u7684\u4E00\u7AD9:",
+      '    \xB7 "\u5C11\u4E00\u7AD9/\u53BB\u6389\u4E00\u7AD9" \u2192 \u6311\u4E0E\u539F\u59CB\u8BC9\u6C42\u6700\u4E0D\u76F8\u5173\u3001\u6216\u540C\u7C7B\u91CC\u6700\u5197\u4F59/\u6700\u8D35\u7684\u90A3\u7AD9\u5220;',
+      '    \xB7 "\u6362\u4FBF\u5B9C\u7684"\u6CA1\u8BF4\u54EA\u7AD9 \u2192 \u6311\u5F53\u524D\u6700\u8D35\u6216\u6700\u4E0D\u5FC5\u8981\u7684\u90A3\u7AD9;',
+      '    \xB7 \u5E8F\u6570"\u7B2C\u4E8C/\u7B2C3/\u6700\u540E\u4E00\u5BB6"\u76F4\u63A5\u5BF9\u5E94 targetIndex\u3002',
+      "- targetCategory: \u4EC5 add \u65F6\u7ED9\u76EE\u6807\u7C7B\u76EE(dining|cafe|culture|entertainment|shopping|nightscape),\u5426\u5219 null\u3002",
+      "- newBudget: \u4EC5 rebudget \u65F6\u7ED9\u6570\u5B57\u3002",
+      '\u8BED\u4E49\u5BF9\u5E94:"\u66F4\u4FBF\u5B9C/\u7701\u94B1"=cheaper;"\u66F4\u8FD1/\u5C11\u8D70/\u5C11\u6253\u8F66"=closer;"\u8BC4\u5206\u66F4\u9AD8/\u53E3\u7891\u66F4\u597D"=higher_rated;"\u6362\u4E00\u5BB6"=swap;"\u5C11\u4E00\u7AD9/\u53BB\u6389/\u5220\u6389"=remove;"\u52A0\u4E00\u7AD9/\u518D\u6765\u4E00\u4E2A"=add;"\u9884\u7B97\u6539\u6210X/\u63A7\u5236\u5728X\u5185"=rebudget\u3002'
+    ].join("\n") },
     { role: "user", content: JSON.stringify({ originalRequest: baseRequest ?? null, currentPlan: stops, modification: request }) }
   ];
 }
 async function parseEditIntentLLM(request, prev, deps = {}) {
-  const base = parseEditIntent(request, prev);
-  if (!deps.chatJson) return base;
+  const fallback2 = () => parseEditIntent(request, prev);
+  if (!deps.chatJson) return fallback2();
   let llm = null;
   try {
     llm = await deps.chatJson(editPrompt(request, prev, deps.baseRequest));
   } catch {
     llm = null;
   }
-  if (!llm || typeof llm !== "object") return base;
-  const ruleIsCriterion = CRITERION_OPS.includes(base.op);
-  const op = ruleIsCriterion && !CRITERION_OPS.includes(llm.op) ? base.op : VALID_OPS.includes(llm.op) ? llm.op : base.op;
-  const targetIndex = Number.isInteger(llm.targetIndex) && llm.targetIndex >= 0 && llm.targetIndex < prev.stops.length ? llm.targetIndex : base.targetIndex;
-  const targetCategory = VALID_CATS.includes(llm.targetCategory) ? llm.targetCategory : base.targetCategory;
-  const newBudget = op === "rebudget" ? Number.isFinite(llm.newBudget) ? Number(llm.newBudget) : base.newBudget : void 0;
+  if (!llm || typeof llm !== "object" || !VALID_OPS.includes(llm.op)) return fallback2();
+  const op = llm.op;
+  if (op === "clarify") {
+    const question = typeof llm.question === "string" && llm.question.trim() ? llm.question.trim() : "\u4F60\u60F3\u600E\u4E48\u6539\u8FD9\u6761\u8DEF\u7EBF?";
+    const options = Array.isArray(llm.options) ? llm.options.map((o) => String(o)).filter(Boolean).slice(0, 4) : void 0;
+    return { op, question, options, raw: request.trim() };
+  }
+  const targetIndex = Number.isInteger(llm.targetIndex) && llm.targetIndex >= 0 && llm.targetIndex < prev.stops.length ? llm.targetIndex : null;
+  const targetCategory = VALID_CATS.includes(llm.targetCategory) ? llm.targetCategory : null;
+  const newBudget = op === "rebudget" ? Number.isFinite(llm.newBudget) ? Number(llm.newBudget) : parseEditIntent(request, prev).newBudget : void 0;
   return { op, targetIndex, targetCategory, newBudget, raw: request.trim() };
 }
 var CAT_KEYWORD = {
@@ -2160,6 +2175,14 @@ function chooseReplacement(op, current, pool, prev, targetIndex, usedIds) {
   }
   return cands.sort((a, b) => b.score - a.score)[0] ?? null;
 }
+function pickDropIndex(picks) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const p of picks) counts.set(p.poi.category, (counts.get(p.poi.category) ?? 0) + 1);
+  for (let i = picks.length - 1; i >= 0; i--) {
+    if ((counts.get(picks[i].poi.category) ?? 0) > 1) return i;
+  }
+  return picks.length - 1;
+}
 function applyEdit(op, prev, scoredPool, constraints) {
   const picks = prev.stops.map(keptPick);
   const usedIds = new Set(picks.map((p) => p.poi.id));
@@ -2169,14 +2192,15 @@ function applyEdit(op, prev, scoredPool, constraints) {
     if (found >= 0) idx = found;
   }
   if (op.op === "remove") {
-    if (idx == null || idx < 0 || idx >= picks.length) {
-      return { picks, changed: false, note: "\u6CA1\u627E\u5230\u8981\u5220\u9664\u7684\u7AD9\u70B9\uFF0C\u65B9\u6848\u4FDD\u6301\u4E0D\u53D8\u3002" };
-    }
     if (picks.length <= 2) {
       return { picks, changed: false, note: "\u53EA\u5269\u4E24\u7AD9\uFF0C\u5220\u6389\u4F1A\u8BA9\u884C\u7A0B\u8FC7\u77ED\uFF0C\u5DF2\u4FDD\u7559\u539F\u7AD9\u70B9\u3002" };
     }
-    const removed = picks[idx];
-    picks.splice(idx, 1);
+    let dropIdx = idx;
+    if (dropIdx == null || dropIdx < 0 || dropIdx >= picks.length) {
+      dropIdx = pickDropIndex(picks);
+    }
+    const removed = picks[dropIdx];
+    picks.splice(dropIdx, 1);
     return { picks, changed: true, note: `\u5DF2\u53BB\u6389\u300C${removed.poi.name}\u300D\u8FD9\u4E00\u7AD9\u3002` };
   }
   if (op.op === "add") {
@@ -2410,6 +2434,12 @@ async function* runReplanLoop(req, previousPlan, identity, deps, persona) {
   const planDesc = previousPlan.stops.map((s, i) => `${i + 1}.${s.poi.name}${s.poi.perCapita != null ? `(\xA5${s.poi.perCapita})` : ""}`).join("  ");
   yield { type: "thought", text: `\u539F\u8BA1\u5212\u300C${req.baseRequest || "\u4E4B\u524D\u7684\u5B89\u6392"}\u300D:${planDesc}\u3002\u7528\u6237\u73B0\u5728\u60F3:${req.request}\u3002\u5148\u5B9A\u4F4D\u6539\u54EA\u4E00\u7AD9\u3001\u6309\u4EC0\u4E48\u6807\u51C6\u6362\u3002` };
   const op = deps.editChatJson ? await parseEditIntentLLM(req.request, previousPlan, { chatJson: deps.editChatJson, baseRequest: req.baseRequest }) : parseEditIntent(req.request, previousPlan);
+  if (op.op === "clarify") {
+    yield { type: "thought", text: `\u8FD9\u6761\u4FEE\u6539\u6211\u4E0D\u592A\u786E\u5B9A\u5177\u4F53\u60F3\u600E\u4E48\u6539:${req.request}\u3002\u5148\u95EE\u6E05\u695A\u518D\u52A8\u624B\u3002` };
+    yield stage("understand", "\u8BFB\u61C2\u4FEE\u6539\u9700\u6C42", "ok", { summary: "\u9700\u8981\u4F60\u8BF4\u6E05\u695A" });
+    yield { type: "question", conversationId: deps.planId(), question: op.question || "\u4F60\u60F3\u600E\u4E48\u6539\u8FD9\u6761\u8DEF\u7EBF?", ...op.options ? { options: op.options } : {} };
+    return;
+  }
   const constraints = constraintsFromPrev(previousPlan, persona, op);
   const tgtIdx = op.targetIndex ?? (op.targetCategory ? previousPlan.stops.findIndex((s) => s.poi.category === op.targetCategory) : -1);
   const tgtName = tgtIdx >= 0 ? previousPlan.stops[tgtIdx]?.poi.name : null;
