@@ -7,11 +7,13 @@ import { resolveIdentity } from '../identity.js'
 import { savePlan } from '../db/plans.js'
 import { hasDatabase } from '../db/client.js'
 import { runPlanLoop } from '../agent/loop.js'
+import { runReactLoop } from '../agent/react.js'
 import { understand } from '../agent/understandLLM.js'
 import { retrieve } from '../agent/retrieve.js'
 import { streamExplanation } from '../agent/explain.js'
 import { readCache, writeCache } from '../amap/cache.js'
 import { chatJson } from '../deepseek/client.js'
+import { saveConversation, loadConversation } from '../db/conversations.js'
 
 function readBody(req) {
   if (!req.body) return {}
@@ -44,24 +46,57 @@ export default async function handler(req, res) {
     return sse.close()
   }
 
+  const reqData = parsed.data
   const identity = await identityFromReq(req)
   const sse = openSSE(res)
   const key = getAmapKey()
-  const deps = {
+  const apiKey = process.env.DEEPSEEK_API_KEY ?? ''
+
+  // single-keyword real POI search (amap place/text via cache) — ReAct's searchPOI tool.
+  const searchPOI = async (keyword, district) => {
+    const resolved = await resolveLocation(reqData.request).catch(() => null)
+    const city = resolved?.city ?? null
+    if (!city) return []
+    const result = await retrieve(
+      { keywords: [keyword], location: { city, district: district ?? null, center: resolved.center }, key },
+      { readCache: (k) => readCache(k), writeCache: (k, payload) => writeCache(k, payload) },
+    )
+    return result.pois
+  }
+
+  const sharedDeps = {
     resolveLocation,
     understand: (raw, loc, persona, preferences) => understand(raw, loc, persona, preferences, {}),
     retrieve: (keywords, loc) => retrieve({ keywords, location: loc, key }, {
       readCache: (k) => readCache(k), writeCache: (k, payload) => writeCache(k, payload),
     }),
-    streamExplanation: (route, c) => streamExplanation(route, c, { apiKey: process.env.DEEPSEEK_API_KEY ?? '' }),
+    streamExplanation: (route, c) => streamExplanation(route, c, { apiKey }),
     savePlan: (record) => (hasDatabase() ? savePlan(record) : Promise.resolve({ id: record.id })),
     planId: () => `plan-${randomUUID()}`,
-    editChatJson: (messages) => chatJson({ apiKey: process.env.DEEPSEEK_API_KEY ?? '', messages }),
   }
 
   try {
-    for await (const event of runPlanLoop(parsed.data, identity, deps)) {
-      sse.send(event)
+    // ── replan: editing an existing plan stays on the deterministic loop ──
+    if (reqData.previousPlan != null && reqData.previousPlan.stops.length >= 2) {
+      const deps = { ...sharedDeps, editChatJson: (messages) => chatJson({ apiKey, messages }) }
+      for await (const event of runPlanLoop(reqData, identity, deps)) sse.send(event)
+    } else {
+      // ── new / resumed conversational ReAct plan ──
+      let priorState
+      if (reqData.conversationId && reqData.answer && hasDatabase()) {
+        const conv = await loadConversation(reqData.conversationId).catch(() => null)
+        if (conv) priorState = conv.state
+      }
+      const reactDeps = {
+        ...sharedDeps,
+        searchPOI,
+        saveConversation: (id, owner, state) =>
+          (hasDatabase() ? saveConversation(id, owner, state) : Promise.resolve({ id })),
+        conversationId: () => `conv-${randomUUID()}`,
+        chatJson: (messages) => chatJson({ apiKey, messages }),
+        priorState,
+      }
+      for await (const event of runReactLoop(reqData, identity, reactDeps)) sse.send(event)
     }
   } catch (err) {
     sse.send({ type: 'error', code: 'upstream-unavailable', message: '规划过程出现异常，请稍后再试。', recoverable: true })
