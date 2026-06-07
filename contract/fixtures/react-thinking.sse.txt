@@ -1,0 +1,33 @@
+event: thought
+data: {"type":"thought","text":"用户带孩子在北京海淀，要博物馆、公园和亲子餐厅，预算150。先找亲子餐厅。"}
+
+event: action
+data: {"type":"action","tool":"searchPOI","args":"海淀 亲子餐厅"}
+
+event: observation
+data: {"type":"observation","summary":"找到 5 家亲子餐厅，评分 4.3–4.7","count":5}
+
+event: thought
+data: {"type":"thought","text":"餐厅够了，再找一个适合遛娃的公园。"}
+
+event: action
+data: {"type":"action","tool":"searchPOI","args":"海淀 公园"}
+
+event: observation
+data: {"type":"observation","summary":"找到 6 个公园","count":6}
+
+event: action
+data: {"type":"action","tool":"finish","args":"候选充足，开始排路线"}
+
+event: constraints
+data: {"type":"constraints","constraints":{"city":"北京","district":"海淀","startTime":10,"durationMin":300,"party":3,"budgetPerCapita":null,"diningBudgetPerCapita":150,"prefs":["family"],"avoid":[],"mustCategories":["dining","culture"],"pace":"normal","personaId":"family","raw":"带孩子在北京海淀逛博物馆和公园，找个亲子餐厅，人均150"}}
+
+event: route
+data: {"type":"route","route":{"id":"route-0","stops":[{"poi":{"id":"BJ-park-1","name":"海淀公园","category":"culture","city":"北京","area":"海淀","lat":39.985,"lng":116.298,"rating":4.6,"perCapita":null,"tags":["亲子","遛娃"],"openHour":6,"closeHour":21,"photos":[],"tel":null,"source":"amap"},"arrive":10,"depart":11.5,"legFromPrev":null,"reasons":["适合带孩子"],"sources":{"rating":"amap","sceneTags":"derived"}}],"totalCost":0,"totalWalkMin":0,"totalTransitMin":0,"endTime":11.5,"coverage":["culture"],"checks":[],"explanation":"","risks":[]}}
+
+event: explanation
+data: {"type":"explanation","routeId":"route-0","delta":"先带孩子去海淀公园遛弯，"}
+
+event: done
+data: {"type":"done","planId":"plan-react-1","routes":[{"id":"route-0","stops":[{"poi":{"id":"BJ-park-1","name":"海淀公园","category":"culture","city":"北京","area":"海淀","lat":39.985,"lng":116.298,"rating":4.6,"perCapita":null,"tags":["亲子"],"openHour":6,"closeHour":21,"photos":[],"tel":null,"source":"amap"},"arrive":10,"depart":11.5,"legFromPrev":null,"reasons":["适合带孩子"],"sources":{"rating":"amap"}}],"totalCost":0,"totalWalkMin":0,"totalTransitMin":0,"endTime":11.5,"coverage":["culture"],"checks":[],"explanation":"先带孩子去海淀公园遛弯，","risks":[]}],"dataSources":{"amapPoi":{"configured":true,"used":true,"status":"ok"},"amapRoute":{"configured":true,"used":true,"status":"ok"},"deepseek":{"configured":true,"used":true,"status":"ok"},"cache":{"hits":2,"misses":3}}}
+

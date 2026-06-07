@@ -12,6 +12,9 @@ export const PlanRequestSchema = z.object({
   }),
   previousPlan: RouteSchema.nullable(),
   sessionId: z.string().optional(),
+  // ReAct: resume a paused conversation (askUser) with the user's answer.
+  conversationId: z.string().optional(),
+  answer: z.string().optional(),
 })
 export type PlanRequest = z.infer<typeof PlanRequestSchema>
 
@@ -53,8 +56,32 @@ export const ErrorEventSchema = z.object({
   recoverable: z.boolean(),
 })
 
+// --- ReAct agent events (reason → act → observe, streamed live) ---
+export const ThoughtEventSchema = z.object({
+  type: z.literal('thought'),
+  text: z.string(),
+})
+export const ActionEventSchema = z.object({
+  type: z.literal('action'),
+  tool: z.enum(['searchPOI', 'askUser', 'finish']),
+  args: z.string(), // human-readable arg summary, e.g. the keyword being searched
+})
+export const ObservationEventSchema = z.object({
+  type: z.literal('observation'),
+  summary: z.string(),
+  count: z.number().optional(),
+})
+/** Agent pauses and asks the user; the stream ends here. Resume via PlanRequest{conversationId,answer}. */
+export const QuestionEventSchema = z.object({
+  type: z.literal('question'),
+  conversationId: z.string(),
+  question: z.string(),
+  options: z.array(z.string()).optional(),
+})
+
 export const SSEEventSchema = z.discriminatedUnion('type', [
   StageEventSchema, ConstraintsEventSchema, CandidatesEventSchema,
   RouteEventSchema, ExplanationEventSchema, DoneEventSchema, ErrorEventSchema,
+  ThoughtEventSchema, ActionEventSchema, ObservationEventSchema, QuestionEventSchema,
 ])
 export type SSEEvent = z.infer<typeof SSEEventSchema>

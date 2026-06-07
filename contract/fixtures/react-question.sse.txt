@@ -1,0 +1,9 @@
+event: thought
+data: {"type":"thought","text":"用户说去公园，但海淀有好几个类型差别很大的公园，先问清楚偏好。"}
+
+event: action
+data: {"type":"action","tool":"askUser","args":"询问公园偏好"}
+
+event: question
+data: {"type":"question","conversationId":"conv-demo-1","question":"海淀的公园里，你更想要哪种？","options":["带娃游乐设施","安静自然散步","有湖景拍照"]}
+
