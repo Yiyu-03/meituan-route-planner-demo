@@ -19,7 +19,10 @@ export function ShareCardModal({ route, constraints, onClose }: {
     try {
       if (document.fonts?.ready) { try { await document.fonts.ready } catch { /* ignore */ } }
       const { toPng } = await import('html-to-image')
-      const dataUrl = await toPng(node, { pixelRatio: 3, cacheBust: true, backgroundColor: '#efe7d4' })
+      // skipFonts: the 手帐 webfonts (LXGW 文楷 / Fraunces) live on CORS-less CDNs; trying to inline
+      // them makes the export throw. We skip embedding and let the PNG fall back to system CJK serif —
+      // the on-screen preview keeps the real fonts. cacheBust avoids stale-CORS image reuse.
+      const dataUrl = await toPng(node, { pixelRatio: 3, cacheBust: true, backgroundColor: '#efe7d4', skipFonts: true })
       const blob = await (await fetch(dataUrl)).blob()
       const file = new File([blob], `roam-${Date.now()}.png`, { type: 'image/png' })
       const nav = navigator as Navigator & {
