@@ -18,9 +18,24 @@ export interface ErrorState {
   recoverable: boolean
 }
 
+/** One step of the agent's live reasoning trail (reason → act → observe). */
+export type AgentStep =
+  | { kind: 'thought'; text: string }
+  | { kind: 'action'; tool: 'searchPOI' | 'askUser' | 'finish'; args: string }
+  | { kind: 'observation'; summary: string; count?: number }
+
+/** The agent paused to ask the user; resume via answer(). */
+export interface QuestionState {
+  conversationId: string
+  question: string
+  options?: string[]
+}
+
 export interface PlanState {
   streaming: boolean
   stages: StageState[]
+  thinking: AgentStep[]
+  question: QuestionState | null
   constraints: Constraints | null
   candidates: ScoredPOI[]
   route: Route | null
@@ -34,6 +49,8 @@ export function initialPlanState(): PlanState {
   return {
     streaming: false,
     stages: [],
+    thinking: [],
+    question: null,
     constraints: null,
     candidates: [],
     route: null,
@@ -55,6 +72,7 @@ export interface LoadAction {
 type Action =
   | SSEEvent
   | { type: 'start' }
+  | { type: 'resume' }
   | { type: 'finish' }
   | { type: 'reset' }
   | LoadAction
@@ -63,6 +81,9 @@ export function planReducer(state: PlanState, action: Action): PlanState {
   switch (action.type) {
     case 'start':
       return { ...initialPlanState(), streaming: true }
+    case 'resume':
+      // Continue a paused conversation: keep the thinking trail, clear the question, stream on.
+      return { ...state, streaming: true, question: null, error: null }
     case 'finish':
       return { ...state, streaming: false }
     case 'reset':
@@ -86,6 +107,29 @@ export function planReducer(state: PlanState, action: Action): PlanState {
         }],
       }
     }
+    case 'thought':
+      return { ...state, thinking: [...state.thinking, { kind: 'thought', text: action.text }] }
+    case 'action':
+      return {
+        ...state,
+        thinking: [...state.thinking, { kind: 'action', tool: action.tool, args: action.args }],
+      }
+    case 'observation':
+      return {
+        ...state,
+        thinking: [...state.thinking, { kind: 'observation', summary: action.summary, count: action.count }],
+      }
+    case 'question':
+      // Agent paused for input: stream ends but the plan is not finished.
+      return {
+        ...state,
+        streaming: false,
+        question: {
+          conversationId: action.conversationId,
+          question: action.question,
+          options: action.options,
+        },
+      }
     case 'constraints':
       return { ...state, constraints: action.constraints }
     case 'candidates':
@@ -127,12 +171,15 @@ export interface RunOptions {
 export function usePlanStream() {
   const [state, dispatch] = useReducer(planReducer, undefined, initialPlanState)
   const abortRef = useRef<AbortController | null>(null)
+  // Remember the last request + run options so answer() can resume the same conversation.
+  const lastRunRef = useRef<{ request: PlanRequest; opts: RunOptions } | null>(null)
+  const questionRef = useRef<QuestionState | null>(null)
+  questionRef.current = state.question
 
-  const run = useCallback(async (request: PlanRequest, opts: RunOptions = {}) => {
+  const stream = useCallback(async (request: PlanRequest, opts: RunOptions) => {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
-    dispatch({ type: 'start' })
     try {
       await streamPlan(request, {
         source: opts.source,
@@ -151,6 +198,27 @@ export function usePlanStream() {
     }
   }, [])
 
+  const run = useCallback(async (request: PlanRequest, opts: RunOptions = {}) => {
+    lastRunRef.current = { request, opts }
+    dispatch({ type: 'start' })
+    await stream(request, opts)
+  }, [stream])
+
+  /** Resume a paused (askUser) conversation with the user's answer. */
+  const answer = useCallback(async (text: string) => {
+    const pending = questionRef.current
+    const last = lastRunRef.current
+    if (!pending || !last) return
+    const request: PlanRequest = {
+      ...last.request,
+      conversationId: pending.conversationId,
+      answer: text,
+    }
+    lastRunRef.current = { request, opts: last.opts }
+    dispatch({ type: 'resume' })
+    await stream(request, last.opts)
+  }, [stream])
+
   const loadPlan = useCallback((action: Omit<LoadAction, 'type'>) => {
     abortRef.current?.abort()
     dispatch({ type: 'load', ...action })
@@ -161,5 +229,5 @@ export function usePlanStream() {
     dispatch({ type: 'reset' })
   }, [])
 
-  return { state, run, loadPlan, reset }
+  return { state, run, answer, loadPlan, reset }
 }

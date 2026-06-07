@@ -106,6 +106,39 @@ describe('PlannerView', () => {
     expect(req.previousPlan).toBeNull()
   })
 
+  it('renders the agent thinking trail then the finished route from the react fixture', async () => {
+    const { getByPlaceholderText, getByRole, findByText } = render(
+      <PlannerView identity={identity} onLogout={() => {}} fixtureOverride="react-thinking" />,
+    )
+    await userEvent.type(getByPlaceholderText(/静安/), '北京海淀带孩子')
+    await userEvent.click(getByRole('button', { name: '生成路线' }))
+    // the thinking trail section is present (folds once done, but its header remains)
+    expect(await findByText('思考过程')).toBeInTheDocument()
+    // and the finished route from the fixture shows up
+    expect(await findByText('海淀公园')).toBeInTheDocument()
+  })
+
+  it('shows AgentQuestion when the agent asks, and resumes with conversationId + answer', async () => {
+    const { getByPlaceholderText, getByRole, findByText } = render(
+      <PlannerView identity={identity} onLogout={() => {}} fixtureOverride="react-question" />,
+    )
+    await userEvent.type(getByPlaceholderText(/静安/), '北京海淀公园')
+    await userEvent.click(getByRole('button', { name: '生成路线' }))
+
+    // the agent's question appears
+    expect(await findByText('海淀的公园里，你更想要哪种？')).toBeInTheDocument()
+    const option = await findByText('带娃游乐设施')
+
+    // answering resumes the conversation with conversationId + answer
+    const spy = vi.spyOn(planStreamApi, 'streamPlan').mockResolvedValue(undefined)
+    await userEvent.click(option)
+
+    await waitFor(() => expect(spy).toHaveBeenCalled())
+    const [req] = spy.mock.calls[0]
+    expect(req.conversationId).toBe('conv-demo-1')
+    expect(req.answer).toBe('带娃游乐设施')
+  })
+
   it('loads a plan from the shelf into the main view', async () => {
     vi.mocked(historyApi.listHistory).mockResolvedValue([
       { planId: 'p-hist', request: '外滩夜景散步', createdAt: '2026-05-20T00:00:00Z' },

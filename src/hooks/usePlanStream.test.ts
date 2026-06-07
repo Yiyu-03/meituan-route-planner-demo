@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { planReducer, initialPlanState } from './usePlanStream'
-import type { SSEEvent, Route, Constraints, DataSources } from '../../contract'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { planReducer, initialPlanState, usePlanStream } from './usePlanStream'
+import * as planStreamApi from '../api/planStream'
+import type { SSEEvent, Route, Constraints, DataSources, PlanRequest } from '../../contract'
 
 const stage: SSEEvent = { type: 'stage', key: 'retrieve', label: '召回', status: 'ok', ms: 120 }
 const route: SSEEvent = {
@@ -70,5 +72,71 @@ describe('planReducer', () => {
     expect(s.route).toBeNull()
     expect(s.constraints).toBeNull()
     expect(s.error).toBeNull()
+  })
+
+  it('accumulates thought/action/observation into an ordered thinking list', () => {
+    let s = planReducer(initialPlanState(), { type: 'thought', text: '先找亲子餐厅' })
+    s = planReducer(s, { type: 'action', tool: 'searchPOI', args: '海淀 亲子餐厅' })
+    s = planReducer(s, { type: 'observation', summary: '找到 5 家', count: 5 })
+    expect(s.thinking).toHaveLength(3)
+    expect(s.thinking[0]).toMatchObject({ kind: 'thought', text: '先找亲子餐厅' })
+    expect(s.thinking[1]).toMatchObject({ kind: 'action', tool: 'searchPOI', args: '海淀 亲子餐厅' })
+    expect(s.thinking[2]).toMatchObject({ kind: 'observation', summary: '找到 5 家', count: 5 })
+  })
+
+  it('enters a waiting state on a question event (stream stops, not finished)', () => {
+    const s = planReducer(initialPlanState(), {
+      type: 'question', conversationId: 'conv-1', question: '想要哪种公园?', options: ['遛娃', '安静'],
+    })
+    expect(s.streaming).toBe(false)
+    expect(s.question).toEqual({ conversationId: 'conv-1', question: '想要哪种公园?', options: ['遛娃', '安静'] })
+    expect(s.route).toBeNull()
+  })
+
+  it('clears a pending question when a new stream starts', () => {
+    let s = planReducer(initialPlanState(), {
+      type: 'question', conversationId: 'conv-1', question: '?', options: [],
+    })
+    s = planReducer(s, { type: 'start' })
+    expect(s.question).toBeNull()
+    expect(s.streaming).toBe(true)
+  })
+})
+
+const baseRequest: PlanRequest = {
+  request: '带孩子在北京海淀',
+  preferences: { personaPick: 'auto', prefs: [], budgetPref: null },
+  previousPlan: null,
+}
+
+afterEach(() => vi.restoreAllMocks())
+
+describe('usePlanStream answer()', () => {
+  it('resumes with conversationId + answer via streamPlan', async () => {
+    const spy = vi.spyOn(planStreamApi, 'streamPlan').mockImplementation(async (_req, opts) => {
+      opts.onEvent({
+        type: 'question', conversationId: 'conv-9', question: '哪种?', options: ['A', 'B'],
+      })
+    })
+    const { result } = renderHook(() => usePlanStream())
+
+    await act(async () => { await result.current.run(baseRequest) })
+    await waitFor(() => expect(result.current.state.question?.conversationId).toBe('conv-9'))
+
+    spy.mockResolvedValueOnce(undefined)
+    await act(async () => { await result.current.answer('A') })
+
+    const lastCall = spy.mock.calls.at(-1)!
+    expect(lastCall[0].conversationId).toBe('conv-9')
+    expect(lastCall[0].answer).toBe('A')
+    // pending question cleared on resume
+    expect(result.current.state.question).toBeNull()
+  })
+
+  it('answer() is a no-op when there is no pending question', async () => {
+    const spy = vi.spyOn(planStreamApi, 'streamPlan').mockResolvedValue(undefined)
+    const { result } = renderHook(() => usePlanStream())
+    await act(async () => { await result.current.answer('hi') })
+    expect(spy).not.toHaveBeenCalled()
   })
 })
