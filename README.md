@@ -1,175 +1,98 @@
-# 美团 AI Hackathon · 本地生活路线智能规划 Demo
+# 漫游·手帐 · Stroll Journal
 
-这是一个 Vite + React + TypeScript 的本地生活路线规划 Demo。用户输入一句自然语言出行需求后，系统基于本地 mock POI 数据生成可执行路线，并展示预算、营业、排队、移动成本、推荐理由、备选方案和局部重规划结果。
+一句自然语言，生成一条**真实可走**的城市漫游路线——并把它做成可分享的手帐。
 
-当前版本的重点不是接真实服务，而是把“本地生活路线 Agent”跑通并讲清楚：路线不是 LLM 直接编出来的攻略文本，而是经过结构化约束抽取、候选召回、个性化排序、路线组合、约束校验和必要修复后生成的路线对象。
+> 在线体验：<https://meituan-route-planner-demo.vercel.app>
 
-## 当前能力
+这不是"让大模型编一段攻略文本"。路线是一个结构化对象：经过需求理解 → 真实 POI 召回 → 个性化打分 → 路线组合 → 体检 → 修复 → 排序 → 真实步行/车程接腿，最后由大模型写推荐理由。**全程不编造地点**——候选只来自高德真实 POI，数据不足时如实提示，而不是伪造外地路线。
 
-- 自然语言输入：识别城市/区域、时间、人数、预算、偏好、规避条件、交通节奏等。
-- 多约束路线：串联 3 个以上 POI，覆盖餐饮、咖啡、文化、娱乐、购物、夜景等本地生活场景。
-- 用户画像：支持情侣约会、带娃家庭、朋友聚会、独自闲逛，并可由文本自动推断。
-- mock 登录/注册：昵称、出行偏好、预算偏好写入 localStorage。
-- 用户 session/history：最近规划记录按 mock userId 分开保存，未登录态也有独立访客归属。
-- 偏好注入：安静、省钱、少排队、亲子友好、预算偏好会进入规划输入并影响推荐排序。
-- 多轮修改：支持“换一家评分更高的餐厅”“预算降到 300”“不要太赶”等局部 replan。
-- 数据来源说明：在“查看规划依据”附录中说明 mock 数据源、Vercel API adapter 和未来可替换的真实接口。
-- 独立 mock backend：`server/` 提供 mock auth、mock history、mock POI search 和 mock route estimate，用于说明服务端与数据源接口形态。
-- 高德 API adapter 雏形：`api/amap/poi-search` 和 `api/amap/route-walking` 可在 Vercel 配置 `AMAP_KEY` 后调用真实高德 Web 服务。
-- 非上海城市试验：上海继续使用稳定 mock 主流程；杭州/余杭、北京、深圳等城市会优先尝试高德真实 POI，失败时回到“不生成假外地路线”的提示。
-- 评测脚本：验证路线数量、预算/营业/排队/画像语义护栏、同输入不同画像差异等。
+## 能做什么
 
-## Agent Loop
+- **对话式规划**：输入"成都春熙路，朋友聚会，先火锅再喝咖啡"，Agent 用 ReAct(推理→搜索→观察)实时把思考流式吐给前端；信息确实不足时才反问澄清。
+- **真实数据**：高德 Web 服务 POI + 真实步行/驾车路径；DeepSeek 负责理解与文案。带缓存以省配额。
+- **基于此方案修改(refine)**：把"第一站火锅换更便宜的""去掉第二站""人均压到 100 以内"这类指令，结合**初始 query + 历史路线**交给大模型做最小改动，并带"改方案"思考流。
+- **手帐分享卡**：把各站拍立得照片用朱砂"毛线针"连线缝在一起(缺图自动落 SVG 占位)，一键导出 PNG / 调系统分享。
+- **多会话便签墙**：历史方案按账户/访客分别保存，可随时翻回再改。
+- **账户**：用户名 + 密码，或访客直接进入。
 
-核心链路如下：
+## 架构(前后端解耦)
 
-```text
-parseConstraints
-  -> retrieveCandidates
-  -> scorePOIs
-  -> buildRouteCandidates
-  -> validateRoute
-  -> repair/replan
-  -> explainRoute
+```
+前端(纯展示)  ──HTTP/SSE──▶  契约层 contract/  ◀──  后端(全部 Agent 逻辑)
+Vite+React+TS                 zod 事件 schema        Vercel Serverless Functions
+                              (stage/thought/         + Neon Postgres
+                               action/observation/    + 高德 Web 服务
+                               route/explanation/      + DeepSeek
+                               question/done/error)
 ```
 
-含义：
+- **契约层 `contract/`**：冻结的 SSE 事件 schema(zod)+ 类型，是前后端唯一接缝。前端只渲染事件，不含任何 Agent 逻辑。
+- **后端 `lib/`**：所有规划逻辑。`api/plan` 由 `lib/handlers/plan.ts` 经 esbuild 打包(Vercel 不转译被 import 的 `.ts`)。
+- **数据**：Neon Postgres(账户/历史/会话/POI 缓存)、高德(POI + 路径)、DeepSeek(理解 + 文案)。
 
-- `parseConstraints`：抽取区域、时间、同行人数、预算、偏好、规避条件和必去类目。
-- `retrieveCandidates`：从本地 mock POI 中按区域、类目、营业和规避条件召回候选。
-- `scorePOIs`：结合画像、偏好、预算、距离、UGC、人均和排队风险做个性化排序。
-- `buildRouteCandidates`：从前排候选中组合 3-5 个 POI，生成多条候选路线。
-- `validateRoute`：检查营业时间、预算、交通时间、步行距离、排队风险、类目覆盖和 POI 数量。
-- `repair/replan`：发现硬冲突或收到用户修改时，只替换必要节点，尽量保留路线结构。
-- `explainRoute`：把结构化结果转成人能看懂的路线解释、风险提醒和推荐理由。
+## Agent 设计
 
-## 数据源说明
-
-当前路线主流程默认使用本地 mock 数据，保证比赛现场和 Vercel 页面稳定可跑：
-
-- POI：名称、区域、坐标、类目、营业时间、人均、评分、点评数。
-- UGC：一句摘要，用于解释推荐亮点和风险提醒。
-- 排队：mock queueBase，用于排队风险展示和少排队偏好降权。
-- 地图：mock 距离和 ETA，用于移动成本、步行/车程展示和路线校验。
-
-这些字段按真实服务接口形态组织，后续可替换为：
-
-- 高德开放平台：POI 搜索、地理编码、路径规划、距离矩阵、交通态势。
-- 美团/点评侧生活数据：UGC、排队、人均、团购、评分、营业、门店履约等。
-
-当前没有接入真实美团/点评交易、排队、UGC、团购数据，也没有真实登录认证或数据库。
-
-## 高德 API Adapter
-
-项目已提供 Vercel Serverless API 雏形，用于说明真实地图/POI 数据源的接入方式。前端主流程不强依赖这些接口；没有配置 key 时，Demo 仍使用本地 mock POI。
-
-接口:
-
-- `GET /api/amap/poi-search?keyword=咖啡&city=上海&area=新天地`
-- `GET /api/amap/route-walking?origin=121.4737,31.2304&destination=121.4740,31.2310`
-
-返回策略:
-
-- 未配置 `AMAP_KEY`：返回 `status: "not_configured"`，不报错。
-- 已配置 `AMAP_KEY`：调用高德 Web 服务，返回标准化的 POI 或步行路线估算结果。
-
-本地测试 adapter 需要使用 Vercel 的函数运行环境，普通 `npm run dev` 只启动 Vite 前端:
-
-```bash
-npx vercel dev
-curl "http://localhost:3000/api/amap/poi-search?keyword=咖啡&city=上海"
-curl "http://localhost:3000/api/amap/route-walking?origin=121.4737,31.2304&destination=121.4740,31.2310"
+```
+ReAct 主循环(对话式新规划)
+  reason ──▶ searchPOI │ askUser │ finish
+确定性骨架(finish 后复用,也供 refine 复用)
+  understand → retrieve → score → build → validate → repair → rank → attachLegs → explain
 ```
 
-Vercel 配置 `AMAP_KEY`:
+- **确定性骨架**保证路线可行、可解释、可复现;**大模型**只点缀两端(理解关键词、写推荐理由),不直接产出路线，少依赖泛化硬规则。
+- **refine**(`lib/agent/loop.ts` 的 replan 分支):带初始 query + 当前各站人均/评分的 LLM 判断要改哪站、按什么标准;换店保子品类(换"更便宜的火锅"仍给火锅)、尊重便宜/高分意图,并发反思事件确保文案与最终路线一致。
+- **诚实兜底**:高德不可用或候选不足 → 返回明确错误，绝不编造 POI。
 
-1. 到高德开放平台注册应用并开通 Web 服务 API。
-2. 在 Vercel 项目里进入 `Settings -> Environment Variables`。
-3. 新增变量 `AMAP_KEY`，值为你的高德 Web 服务 key。
-4. 重新部署项目。
+## 技术栈
 
-配置后，adapter 可以调用真实高德 POI 搜索和步行路径估算；当前路线生成仍默认走本地 mock，以保证 Demo 稳定。后续如要切换为真实数据源，应让 `retrieveCandidates` 和 ETA 估算读取 adapter 返回结果，而不是让 LLM 直接生成路线文本。
+Vite · React 18 · TypeScript · Tailwind · Vercel Serverless Functions · Neon(`@neondatabase/serverless`)· 高德 Web 服务 & JS API · DeepSeek · zod · html-to-image · Vitest
 
-当前有一个轻量试验链路：当输入明确是杭州/余杭、北京、深圳等非上海城市时，前端会尝试调用 `api/amap/*` 获取真实 POI 与步行估算，生成一条简单路线。该路线会在页面标注“高德真实 POI”，但人均、排队、UGC、偏好解释仍是本地规则估算；尚未接入美团/点评真实交易、排队、UGC 或团购数据。
-
-## Mock Backend
-
-项目包含一个独立的最小服务端示例，用于回应“用户、历史路线、POI 搜索、路径估算这些数据源从哪里来”。
-
-```bash
-cd server
-npm install
-npm run dev
-```
-
-默认地址:
-
-```text
-http://localhost:8787
-```
-
-主要接口:
-
-- `GET /health`
-- `POST /auth/register`
-- `POST /auth/login`
-- `GET /me`
-- `GET /history`
-- `POST /history`
-- `GET /poi/search`
-- `POST /route/estimate`
-
-当前前端仍默认使用本地 mock 数据和 localStorage，Vercel Demo 不依赖这个服务端。`server/` 只是数据源抽象层的可运行示例:未来可把 mock POI search 替换为高德 POI/地理编码，把 mock route estimate 替换为高德路径规划/距离矩阵/交通态势，把生活数据替换为美团/点评 UGC、人均、排队、营业、团购等接口。
-
-如果要在 Vercel 上展示真实地图数据接入能力，优先使用上面的 `api/amap/*` serverless adapter；`server/` 主要用于本地说明服务端接口形态。
-
-详细说明见 [docs/API_SERVER.md](docs/API_SERVER.md)。
-
-## 本地运行
+## 本地开发
 
 ```bash
 npm install
-npm run dev
+npm run dev          # Vite 前端(默认走 fixtures 离线数据)
+npm test             # Vitest 全量
+npm run build        # 打包函数 + tsc + vite build
 ```
 
-打开 Vite 输出的本地地址，通常是：
-
-```text
-http://localhost:5173
-```
-
-## 验证
+在仓库根创建 `.env.local`(已 gitignore),填入下列变量后即可联真实后端:
 
 ```bash
-npm run build
-npm run eval
+DEEPSEEK_API_KEY=...            # DeepSeek
+DEEPSEEK_MODEL=deepseek-v4-flash
+AMAP_API_KEY=...               # 高德 Web 服务 key(后端 POI/路径)
+VITE_AMAP_JS_KEY=...           # 高德 JS API key(前端地图，独立)
+VITE_AMAP_SECURITY_CODE=...    # 高德 JS 安全密钥
+DATABASE_URL=postgresql://...  # Neon Postgres
+VITE_PLAN_SOURCE=live          # live=连真实后端;fixtures=离线/跑测试
 ```
 
-如果本地沙盒环境中 `npm run eval` 因 `tsx` 创建临时 IPC pipe 报 `EPERM`，可使用等价命令：
+> 跑 `npm test` 前把 `VITE_PLAN_SOURCE` 切回 `fixtures`(vitest 会加载 `.env.local`，live 会让前端测试连不上后端而失败)。
+
+## 部署(Vercel)
+
+生产即 staging。用 Vercel CLI 云端构建直传(用真值 env 构建)：
 
 ```bash
-node --import tsx scripts/runEval.ts
+vercel --prod --yes
 ```
 
-## Vercel 部署
+线上环境变量在 Vercel 项目 `Settings → Environment Variables` 配置(同上述变量名)。
 
-推荐配置：
+## 目录速览
 
-- Framework Preset: Vite
-- Build Command: `npm run build`
-- Output Directory: `dist`
-- Install Command: `npm install`
-
-前端 Demo 不依赖服务端环境变量；如果要启用高德 adapter，在 Vercel 环境变量中配置 `AMAP_KEY`。
-
-## 演示建议
-
-1. 先用一句自然语言生成路线，停留在用户首页，展示时间轴、预算、营业、排队、移动成本和推荐理由。
-2. 切换 mock 用户或编辑偏好，说明偏好会注入规划输入并影响路线。
-3. 使用“临时改一下”做一次局部 replan，强调只替换必要节点。
-4. 打开“查看规划依据”，展示 Agent Loop、候选排序、约束校验、修复记录和数据源抽象层。
-5. 最后运行评测或展示评测结果，证明路线不是预制模板。
-
-## 中期验收清单
-
-见 [docs/MID_STAGE_CHECKLIST.md](docs/MID_STAGE_CHECKLIST.md)。
+```
+contract/          冻结的 SSE 事件契约(zod) + fixtures
+lib/
+  agent/           understand/retrieve/score/build/validate/repair/rank/explain
+                   react.ts(ReAct 循环) loop.ts(线性 + refine) replan.ts(改方案)
+  amap/            高德 client / POI 特征 / 缓存
+  handlers/plan.ts api/plan 的真正实现(打包成 api/plan.js)
+  db/              Neon 账户 / 历史 / 会话
+api/               Vercel 函数:plan / auth / history / img-proxy
+src/
+  views/           LoginView / PlannerView
+  components/      AgentThinking / RefineBar / StitchRouteCard / JournalCard ...
+  design/          tokens.css(漫游手帐 v2 设计令牌) / icons.tsx(RoamSeal 印记)
+```
