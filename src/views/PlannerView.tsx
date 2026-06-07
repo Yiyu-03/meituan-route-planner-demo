@@ -4,6 +4,8 @@ import type { PlanRequest, Route } from '../../contract'
 import { usePlanStream } from '../hooks/usePlanStream'
 import { InputBar, type InputSubmit } from '../components/InputBar'
 import { ProgressTrail } from '../components/ProgressTrail'
+import { AgentThinking } from '../components/AgentThinking'
+import { AgentQuestion } from '../components/AgentQuestion'
 import { PlanSummary } from '../components/PlanSummary'
 import { Itinerary } from '../components/Itinerary'
 import { WhyDrawer } from '../components/WhyDrawer'
@@ -28,7 +30,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
   /** test-only: force a specific offline fixture. */
   fixtureOverride?: string
 }) {
-  const { state, run, loadPlan, reset } = usePlanStream()
+  const { state, run, answer, loadPlan, reset } = usePlanStream()
   const [lastRequest, setLastRequest] = useState('')
   const [shelfKey, setShelfKey] = useState(0)
   const [shelfOpen, setShelfOpen] = useState(false)
@@ -158,6 +160,16 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
               </section>
 
               <section className="space-y-3">
+                {/* 思考流:规划中实时展开;有方案后折叠备查 */}
+                {state.thinking.length > 0 && (
+                  <AgentThinking steps={state.thinking} streaming={state.streaming} />
+                )}
+
+                {/* 反问:agent 在等用户回答,朱砂高亮 */}
+                {state.question && (
+                  <AgentQuestion question={state.question} onAnswer={answer} />
+                )}
+
                 {state.error ? (
                   <EmptyState error={state.error} onClarifyCity={clarifyCity} />
                 ) : state.route ? (
@@ -169,11 +181,11 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
                     )}
                     <RefineBar onRefine={refine} busy={state.streaming} />
                   </>
-                ) : (
+                ) : !state.streaming && !state.question ? (
                   <p className="paper-card p-6 text-center text-[13px] text-[var(--ink-soft)]">
                     写下这次出门的想法,生成你的路线手帐。
                   </p>
-                )}
+                ) : null}
               </section>
             </main>
           </div>

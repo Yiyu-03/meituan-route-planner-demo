@@ -45,6 +45,49 @@ describe('streamPlan over a live ReadableStream', () => {
     expect(got.some((e) => e.type === 'error' && e.code === 'needs-clarification')).toBe(true)
   })
 
+  it('streams the react-thinking fixture (thought/action/observation) in fixtures mode', async () => {
+    const got: SSEEvent[] = []
+    await streamPlan(
+      { request: '带孩子', preferences: { personaPick: 'auto', prefs: [], budgetPref: null }, previousPlan: null },
+      { source: 'fixtures', fixture: 'react-thinking', onEvent: (e) => got.push(e) },
+    )
+    expect(got.some((e) => e.type === 'thought')).toBe(true)
+    expect(got.some((e) => e.type === 'action')).toBe(true)
+    expect(got.some((e) => e.type === 'observation')).toBe(true)
+    expect(got.at(-1)?.type).toBe('done')
+  })
+
+  it('ends the react-question fixture on a question event (paused for the user)', async () => {
+    const got: SSEEvent[] = []
+    await streamPlan(
+      { request: '公园', preferences: { personaPick: 'auto', prefs: [], budgetPref: null }, previousPlan: null },
+      { source: 'fixtures', fixture: 'react-question', onEvent: (e) => got.push(e) },
+    )
+    const last = got.at(-1)
+    expect(last?.type).toBe('question')
+    if (last?.type === 'question') {
+      expect(last.conversationId).toBe('conv-demo-1')
+      expect(last.options).toContain('带娃游乐设施')
+    }
+  })
+
+  it('forwards conversationId + answer in the live request body when resuming', async () => {
+    const fetchSpy = vi.fn((_url: string, _init?: RequestInit) =>
+      Promise.resolve(streamFromText('event: done\ndata: {"type":"done","planId":"p","routes":[],"dataSources":{"amapPoi":{"configured":true,"used":true,"status":"ok"},"amapRoute":{"configured":true,"used":true,"status":"ok"},"deepseek":{"configured":true,"used":true,"status":"ok"},"cache":{"hits":0,"misses":0}}}\n\n')),
+    )
+    vi.stubGlobal('fetch', fetchSpy as unknown as typeof fetch)
+    await streamPlan(
+      {
+        request: 'x', preferences: { personaPick: 'auto', prefs: [], budgetPref: null },
+        previousPlan: null, conversationId: 'conv-7', answer: '带娃游乐设施',
+      },
+      { source: 'live', onEvent: () => {} },
+    )
+    const body = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string)
+    expect(body.conversationId).toBe('conv-7')
+    expect(body.answer).toBe('带娃游乐设施')
+  })
+
   it('rejects a frame that violates the contract schema', async () => {
     const bad = 'event: stage\ndata: {"type":"stage"}\n\n'
     vi.stubGlobal('fetch', vi.fn(async () => streamFromText(bad)) as unknown as typeof fetch)
