@@ -58,15 +58,14 @@ export interface WalkingParams {
   key: string
 }
 
-/** v5 walking direction. Returns { distM, minutes } or null. */
-export async function walkingLeg(p: WalkingParams, deps: AmapDeps = {}): Promise<{ distM: number; minutes: number } | null> {
+async function directionLeg(kind: 'walking' | 'driving', p: WalkingParams, deps: AmapDeps): Promise<{ distM: number; minutes: number } | null> {
   const params = new URLSearchParams({
     key: p.key,
     origin: `${p.from.lng},${p.from.lat}`,
     destination: `${p.to.lng},${p.to.lat}`,
   })
   try {
-    const data = await fetchJson(`${AMAP_V5}/direction/walking?${params.toString()}`, { ...deps, timeoutMs: deps.timeoutMs ?? 1600 })
+    const data = await fetchJson(`${AMAP_V5}/direction/${kind}?${params.toString()}`, { ...deps, timeoutMs: deps.timeoutMs ?? 1600 })
     const path = data?.route?.paths?.[0]
     const distM = Math.round(Number(path?.distance ?? 0))
     const durationSec = Number(path?.cost?.duration ?? path?.duration ?? 0)
@@ -76,4 +75,14 @@ export async function walkingLeg(p: WalkingParams, deps: AmapDeps = {}): Promise
   } catch {
     return null
   }
+}
+
+/** v5 walking direction. Returns { distM, minutes } or null. */
+export async function walkingLeg(p: WalkingParams, deps: AmapDeps = {}): Promise<{ distM: number; minutes: number } | null> {
+  return directionLeg('walking', p, deps)
+}
+
+/** v5 driving direction (used for legs beyond walking distance). Returns { distM, minutes } or null. */
+export async function drivingLeg(p: WalkingParams, deps: AmapDeps = {}): Promise<{ distM: number; minutes: number } | null> {
+  return directionLeg('driving', p, deps)
 }

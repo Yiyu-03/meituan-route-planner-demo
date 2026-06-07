@@ -98,7 +98,12 @@ export async function* planFromCandidates(
   yield stage('repair', '修复', 'ok')
 
   const ranked = rankRoutes(repaired, constraints, persona)
-  const best = ranked[0]
+  let best = ranked[0]
+  // Replace estimated legs with real Amap walking/driving legs on the chosen route, then re-check.
+  if (deps.attachLegs && best) {
+    const routed = await deps.attachLegs(best)
+    best = { ...routed, id: best.id, checks: validateRoute(routed, constraints, persona) }
+  }
   yield { type: 'route', route: stripRoute(best) }
 
   yield stage('explain', '写推荐理由', 'running')
@@ -109,10 +114,10 @@ export async function* planFromCandidates(
   }
   yield stage('explain', '写推荐理由', 'ok')
 
-  const finalRoutes: Route[] = ranked.map((r, i) => (i === 0 ? { ...r, explanation } : r))
+  const finalRoutes: Route[] = ranked.map((r, i) => (i === 0 ? { ...best, explanation } : r))
   const dataSources: DataSources = {
     amapPoi: { configured: true, used: amapStatus === 'ok', status: amapStatus },
-    amapRoute: { configured: true, used: best.stops.some((s) => s.legFromPrev?.mode === 'walk'), status: 'ok' },
+    amapRoute: { configured: true, used: Boolean(deps.attachLegs) && best.stops.length > 1, status: 'ok' },
     deepseek: { configured: !!explanation, used: !!explanation, status: explanation ? 'ok' : 'fallback' },
     cache: { hits: opts.cacheHits ?? 0, misses: opts.cacheMisses ?? 0 },
   }
@@ -245,9 +250,13 @@ async function* runReplanLoop(
   route = repairIfNeeded(route, constraints, persona, repairPool).route
   yield stage('repair', '修复', 'ok')
 
-  // 6) rank (single route) → route event before explanation
+  // 6) rank (single route) → real Amap legs → route event before explanation
   const ranked = rankRoutes([route], constraints, persona)
-  const best = ranked[0]
+  let best = ranked[0]
+  if (deps.attachLegs && best) {
+    const routed = await deps.attachLegs(best)
+    best = { ...routed, id: best.id, checks: validateRoute(routed, constraints, persona) }
+  }
   yield { type: 'route', route: stripRoute(best) }
 
   // 7) explanation

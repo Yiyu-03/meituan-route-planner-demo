@@ -11,6 +11,8 @@ import { runReactLoop } from '../agent/react.js'
 import { understand } from '../agent/understandLLM.js'
 import { retrieve } from '../agent/retrieve.js'
 import { streamExplanation } from '../agent/explain.js'
+import { walkingLeg, drivingLeg } from '../amap/client.js'
+import { attachRealLegs } from '../agent/legs.js'
 import { readCache, writeCache } from '../amap/cache.js'
 import { chatJson } from '../deepseek/client.js'
 import { saveConversation, loadConversation } from '../db/conversations.js'
@@ -64,8 +66,19 @@ export default async function handler(req, res) {
     return result.pois
   }
 
+  // Real Amap walking/driving leg with a route cache (key by mode + rounded coords) to guard quota.
+  const cachedLeg = async (from, to, mode) => {
+    const k = `leg:${mode}:${from.lng.toFixed(4)},${from.lat.toFixed(4)}>${to.lng.toFixed(4)},${to.lat.toFixed(4)}`
+    const hit = await readCache(k).catch(() => null)
+    if (hit && typeof hit.minutes === 'number') return hit
+    const r = mode === 'walk' ? await walkingLeg({ from, to, key }) : await drivingLeg({ from, to, key })
+    if (r) await writeCache(k, r).catch(() => {})
+    return r
+  }
+
   const sharedDeps = {
     resolveLocation,
+    attachLegs: key ? (route) => attachRealLegs(route, cachedLeg) : undefined,
     understand: (raw, loc, persona, preferences) => understand(raw, loc, persona, preferences, {}),
     retrieve: (keywords, loc) => retrieve({ keywords, location: loc, key }, {
       readCache: (k) => readCache(k), writeCache: (k, payload) => writeCache(k, payload),
