@@ -1,8 +1,10 @@
 import type { Route, RouteStop } from '../../contract/index.js'
 import { haversineM } from './geo.js'
 
-/** Beyond this straight-line distance, a leg is driven/transit rather than walked. */
-const WALK_MAX_M = 1300
+/** Straight-line distance beyond which we don't even check walking — clearly a drive. */
+const FAR_M = 2500
+/** If the REAL walking time is within this, prefer walking over driving. */
+const WALK_MAX_MIN = 20
 
 export type LegMode = 'walk' | 'transit'
 /** Real travel leg from Amap; returns null on failure so the caller can keep the estimate. */
@@ -33,12 +35,23 @@ export async function attachRealLegs(route: Route, leg: LegFn): Promise<Route> {
     if (i > 0) {
       const prev = stops[i - 1].poi
       const cur = s.poi
+      const from = { lat: prev.lat, lng: prev.lng }
+      const to = { lat: cur.lat, lng: cur.lng }
       const straight = haversineM(prev.lat, prev.lng, cur.lat, cur.lng)
-      const mode: LegMode = straight <= WALK_MAX_M ? 'walk' : 'transit'
-      const real = await leg({ lat: prev.lat, lng: prev.lng }, { lat: cur.lat, lng: cur.lng }, mode)
-      legFromPrev = real
-        ? { distM: real.distM, minutes: real.minutes, mode }
-        : (s.legFromPrev ?? { distM: Math.round(straight), minutes: Math.max(1, Math.round(straight / 80)), mode })
+      // Decide mode from REAL walking time, not straight-line: try walking unless it's
+      // clearly far; walk only if the actual walk is within tolerance, else drive.
+      let chosen: { distM: number; minutes: number; mode: LegMode } | null = null
+      if (straight <= FAR_M) {
+        const walk = await leg(from, to, 'walk')
+        if (walk && walk.minutes <= WALK_MAX_MIN) chosen = { ...walk, mode: 'walk' }
+      }
+      if (!chosen) {
+        const drive = await leg(from, to, 'transit')
+        if (drive) chosen = { ...drive, mode: 'transit' }
+      }
+      legFromPrev = chosen
+        ?? s.legFromPrev
+        ?? { distM: Math.round(straight), minutes: Math.max(1, Math.round(straight / 80)), mode: straight <= FAR_M ? 'walk' : 'transit' }
 
       const minutes = legFromPrev.minutes
       if (legFromPrev.mode === 'walk') totalWalk += minutes

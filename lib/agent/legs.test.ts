@@ -38,6 +38,25 @@ describe('attachRealLegs', () => {
     expect(out.totalTransitMin).toBe(18)
   })
 
+  it('walks a mid-range leg when the REAL walk time is within tolerance (not just straight-line)', async () => {
+    // a→b straight ~150m; make b→? a mid leg: use a route where straight is ~1.8km (> old 1.3km cutoff)
+    const r = {
+      id: 'r', stops: [
+        stop(poi('a', 39.9900, 116.3100), 9, 10),
+        stop(poi('b', 39.9900, 116.3300), 10.2, 11.2), // ~1.7km straight, was 'transit' under old 1.3km rule
+      ],
+      totalCost: 0, totalWalkMin: 0, totalTransitMin: 0, endTime: 11.2,
+      coverage: ['dining'], checks: [], explanation: '', risks: [],
+    }
+    // real walking is 16 min (≤20) → should WALK, driving never queried
+    const leg = vi.fn(async (_f: any, _t: any, mode: string) =>
+      mode === 'walk' ? { distM: 1700, minutes: 16 } : { distM: 1900, minutes: 9 })
+    const out = await attachRealLegs(r as any, leg)
+    expect(out.stops[1].legFromPrev).toEqual({ distM: 1700, minutes: 16, mode: 'walk' })
+    expect(out.totalWalkMin).toBe(16)
+    expect(out.totalTransitMin).toBe(0)
+  })
+
   it('falls back to the existing estimate leg when Amap returns null (no fabrication)', async () => {
     const leg = vi.fn(async () => null)
     const out = await attachRealLegs(route() as any, leg)
