@@ -45,6 +45,39 @@ describe('retrieve', () => {
     expect(result.pois[0].id).toBe('B1')
   })
 
+  it('uses place/around when an anchor center is given', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ status: '1', pois: [cafePoi] }))
+    const result = await retrieve(
+      { keywords: ['咖啡'], location: loc, key: 'K', anchorCenter: { lat: 31.23, lng: 121.45 }, radius: 3000 },
+      { fetchImpl: fetchMock, readCache: async () => null, writeCache: async () => {} },
+    )
+    expect(result.pois[0].id).toBe('B1')
+    const url = String(fetchMock.mock.calls[0][0])
+    expect(url).toContain('/place/around')
+    expect(url).toContain('location=121.45%2C31.23')
+    expect(url).toContain('radius=3000')
+  })
+
+  it('uses place/text (no around) when no anchor center', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ status: '1', pois: [diningPoi] }))
+    await retrieve(
+      { keywords: ['餐厅'], location: loc, key: 'K' },
+      { fetchImpl: fetchMock, readCache: async () => null, writeCache: async () => {} },
+    )
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/place/text')
+  })
+
+  it('anchor cache key differs from city cache key (separate cache namespaces)', async () => {
+    const seen: string[] = []
+    const result = await retrieve(
+      { keywords: ['咖啡'], location: loc, key: 'K', anchorCenter: { lat: 31.23, lng: 121.45 }, radius: 4000 },
+      { fetchImpl: vi.fn() as any, readCache: async (k) => { seen.push(k); return [cafePoi] }, writeCache: async () => {} },
+    )
+    expect(result.cacheHits).toBe(1)
+    expect(seen[0]).toContain('around')
+    expect(seen[0]).toContain('4000')
+  })
+
   it('reports not_configured when no key', async () => {
     const result = await retrieve(
       { keywords: ['x'], location: loc, key: '' },
