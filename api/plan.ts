@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { PlanRequestSchema } from '../contract/index'
 import { resolveLocation, getAmapKey } from '../lib/locationResolver.js'
 import { openSSE } from '../lib/sse.js'
-import { parseBearer } from '../lib/auth.js'
-import { userForSession, createGuest } from '../lib/db/users.js'
+import { createGuest } from '../lib/db/users.js'
+import { resolveIdentity } from '../lib/identity.js'
 import { savePlan } from '../lib/db/plans.js'
 import { hasDatabase } from '../lib/db/client.js'
 import { runPlanLoop } from '../lib/agent/loop.ts'
@@ -20,12 +20,10 @@ function readBody(req) {
 }
 
 async function identityFromReq(req) {
-  const token = parseBearer(req.headers?.authorization)
-  if (token && hasDatabase()) {
-    const user = await userForSession(token)
-    if (user) return { userId: Number(user.id), deviceToken: null }
-  }
-  const device = String(req.headers?.['x-device-token'] || '').trim() || randomUUID()
+  const id = await resolveIdentity(req)
+  if (id.userId) return { userId: id.userId, deviceToken: null }
+  // Guest: the caller's Bearer token IS their device token (stable across plan + history).
+  const device = id.deviceToken || randomUUID()
   if (hasDatabase()) await createGuest(device).catch(() => {})
   return { userId: null, deviceToken: device }
 }

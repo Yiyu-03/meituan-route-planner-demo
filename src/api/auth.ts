@@ -52,12 +52,18 @@ async function postIdentity(path: string, body: unknown): Promise<Identity> {
   return identity
 }
 
+/** Current guest device token, if the active identity is a guest — for plan migration on auth. */
+function guestDeviceToken(): string | null {
+  const id = currentIdentity()
+  return id?.kind === 'guest' ? id.token : null
+}
+
 export function register(username: string, password: string): Promise<Identity> {
-  return postIdentity('/api/auth/register', { username, password })
+  return postIdentity('/api/auth/register', { username, password, deviceToken: guestDeviceToken() })
 }
 
 export function login(username: string, password: string): Promise<Identity> {
-  return postIdentity('/api/auth/login', { username, password })
+  return postIdentity('/api/auth/login', { username, password, deviceToken: guestDeviceToken() })
 }
 
 export function guest(): Promise<Identity> {

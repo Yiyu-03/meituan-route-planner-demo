@@ -22,10 +22,12 @@ async function getJson<T>(path: string): Promise<T> {
   return (await res.json()) as T
 }
 
-export function listHistory(): Promise<HistoryListItem[]> {
-  return getJson<HistoryListItem[]>('/api/history')
+export async function listHistory(): Promise<HistoryListItem[]> {
+  const { plans } = await getJson<{ plans: HistoryListItem[] }>('/api/history')
+  return Array.isArray(plans) ? plans : []
 }
 
-export function getHistory(id: string): Promise<HistoryRecord> {
-  return getJson<HistoryRecord>(`/api/history/${encodeURIComponent(id)}`)
+export async function getHistory(id: string): Promise<HistoryRecord> {
+  const { plan } = await getJson<{ plan: HistoryRecord }>(`/api/history/${encodeURIComponent(id)}`)
+  return plan
 }

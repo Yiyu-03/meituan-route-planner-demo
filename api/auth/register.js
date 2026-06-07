@@ -21,5 +21,5 @@ export default async function handler(req, res) {
   const token = newToken()
   await createSession(token, user.id, sessionExpiry())
   if (deviceToken) await migrateGuestPlans(deviceToken, user.id).catch(() => {})
-  return res.status(201).json({ token, user: { id: user.id, username: user.username } })
+  return res.status(201).json({ token, kind: 'user', name: user.username })
 }

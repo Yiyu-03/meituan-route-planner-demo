@@ -6,5 +6,5 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Use POST' })
   const deviceToken = randomUUID()
   if (hasDatabase()) await createGuest(deviceToken).catch(() => {})
-  return res.status(201).json({ deviceToken })
+  return res.status(201).json({ token: deviceToken, kind: 'guest', name: '访客' })
 }

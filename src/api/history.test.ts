@@ -7,7 +7,7 @@ describe('history client', () => {
   it('lists plans for the current identity', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
-      json: async () => ([{ planId: 'p1', request: '静安咖啡', createdAt: '2026-06-01T00:00:00Z' }]),
+      json: async () => ({ plans: [{ planId: 'p1', request: '静安咖啡', createdAt: '2026-06-01T00:00:00Z' }] }),
     })) as unknown as typeof fetch)
     const items = await listHistory()
     expect(items).toHaveLength(1)
@@ -16,7 +16,7 @@ describe('history client', () => {
   it('fetches one plan by id', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
-      json: async () => ({ planId: 'p1', routes: [], request: 'x' }),
+      json: async () => ({ plan: { planId: 'p1', routes: [], request: 'x' } }),
     })) as unknown as typeof fetch)
     const plan = await getHistory('p1')
     expect(plan.planId).toBe('p1')
