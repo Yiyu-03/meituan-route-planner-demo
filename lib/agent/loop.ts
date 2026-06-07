@@ -39,6 +39,91 @@ function stripRoute(r: Route): Route {
   return { ...r, stops: r.stops.map((st) => ({ ...st, poi: toContractPOI(st.poi) })) }
 }
 
+export interface PlanFromCandidatesOpts {
+  amapStatus?: 'ok' | 'empty' | 'not_configured' | 'error'
+  cacheHits?: number
+  cacheMisses?: number
+  /** Honest note when candidates came from a forced finish (MAX_STEPS / fallback). */
+  forced?: boolean
+  /** Proximity anchor override (e.g. resolved district center); defaults to candidate centroid. */
+  center?: { lat: number; lng: number }
+}
+
+/**
+ * Shared deterministic tail: real candidates → score → build → validate → repair →
+ * rank → route → explanation → persist → done. Reused by the linear loop and the
+ * ReAct loop's `finish` action so the frontend renders both identically.
+ */
+export async function* planFromCandidates(
+  candidates: EnrichedPOI[],
+  constraints: Constraints,
+  persona: ReturnType<typeof personaFor>,
+  req: PlanRequest,
+  identity: LoopIdentity,
+  deps: LoopDeps,
+  opts: PlanFromCandidatesOpts = {},
+): AsyncGenerator<SSEEvent> {
+  const amapStatus = opts.amapStatus ?? 'ok'
+  if (candidates.length < 2) {
+    yield { type: 'error', code: 'insufficient-data', message: '真实候选不足，无法组成路线。', recoverable: true }
+    return
+  }
+
+  // proximity anchor: explicit override (resolved center) or centroid of real coords — never fabricated.
+  const center = opts.center ?? {
+    lat: candidates.reduce((s, p) => s + p.lat, 0) / candidates.length,
+    lng: candidates.reduce((s, p) => s + p.lng, 0) / candidates.length,
+  }
+
+  yield stage('score', '打分', 'running')
+  const scored = scorePOIs(candidates, constraints, persona, center.lat, center.lng)
+  yield stage('score', '打分', 'ok')
+  yield { type: 'candidates', candidates: scored.map(stripScored) }
+
+  yield stage('build', '组合路线', 'running')
+  const { routes: built } = buildRouteCandidates(scored, constraints, persona)
+  if (built.length === 0) {
+    yield stage('build', '组合路线', 'fail')
+    yield { type: 'error', code: 'insufficient-data', message: '真实候选无法组成满足约束的路线。', recoverable: true }
+    return
+  }
+  yield stage('build', '组合路线', 'ok', { summary: `${built.length} 条候选` })
+
+  yield stage('validate', '体检', 'running')
+  const validated = built.map((r) => ({ ...r, checks: validateRoute(r, constraints, persona) }))
+  yield stage('validate', '体检', 'ok')
+
+  yield stage('repair', '修复', 'running')
+  const repaired = validated.map((r) => repairIfNeeded(r, constraints, persona, scored).route)
+  yield stage('repair', '修复', 'ok')
+
+  const ranked = rankRoutes(repaired, constraints, persona)
+  const best = ranked[0]
+  yield { type: 'route', route: stripRoute(best) }
+
+  yield stage('explain', '写推荐理由', 'running')
+  let explanation = ''
+  for await (const delta of deps.streamExplanation(best, constraints)) {
+    explanation += delta
+    yield { type: 'explanation', routeId: best.id, delta }
+  }
+  yield stage('explain', '写推荐理由', 'ok')
+
+  const finalRoutes: Route[] = ranked.map((r, i) => (i === 0 ? { ...r, explanation } : r))
+  const dataSources: DataSources = {
+    amapPoi: { configured: true, used: amapStatus === 'ok', status: amapStatus },
+    amapRoute: { configured: true, used: best.stops.some((s) => s.legFromPrev?.mode === 'walk'), status: 'ok' },
+    deepseek: { configured: !!explanation, used: !!explanation, status: explanation ? 'ok' : 'fallback' },
+    cache: { hits: opts.cacheHits ?? 0, misses: opts.cacheMisses ?? 0 },
+  }
+  const planId = deps.planId()
+  await deps.savePlan({
+    id: planId, userId: identity.userId, deviceToken: identity.deviceToken,
+    request: req.request, constraints, routes: finalRoutes, dataSources,
+  })
+  yield { type: 'done', planId, routes: finalRoutes.map(stripRoute), dataSources }
+}
+
 export async function* runPlanLoop(
   req: PlanRequest, identity: LoopIdentity, deps: LoopDeps,
 ): AsyncGenerator<SSEEvent> {
@@ -81,66 +166,13 @@ export async function* runPlanLoop(
   }
   yield stage('retrieve', '召回真实地点', 'ok', { summary: `${retrieved.pois.length} 家真实店` })
 
-  // 4) score
-  // City resolved but no district center? Use the centroid of the real retrieved
-  // POIs as the proximity anchor — derived from real coordinates, never fabricated.
-  const center = loc.center ?? {
-    lat: retrieved.pois.reduce((s, p) => s + p.lat, 0) / retrieved.pois.length,
-    lng: retrieved.pois.reduce((s, p) => s + p.lng, 0) / retrieved.pois.length,
-  }
-  yield stage('score', '打分', 'running')
-  const pois: EnrichedPOI[] = retrieved.pois
-  const scored = scorePOIs(pois, constraints, persona, center.lat, center.lng)
-  yield stage('score', '打分', 'ok')
-  yield { type: 'candidates', candidates: scored.map(stripScored) }
-
-  // 5) build
-  yield stage('build', '组合路线', 'running')
-  const { routes: built } = buildRouteCandidates(scored, constraints, persona)
-  if (built.length === 0) {
-    yield stage('build', '组合路线', 'fail')
-    yield { type: 'error', code: 'insufficient-data', message: '真实候选无法组成满足约束的路线。', recoverable: true }
-    return
-  }
-  yield stage('build', '组合路线', 'ok', { summary: `${built.length} 条候选` })
-
-  // 6) validate + repair
-  yield stage('validate', '体检', 'running')
-  const validated = built.map((r) => ({ ...r, checks: validateRoute(r, constraints, persona) }))
-  yield stage('validate', '体检', 'ok')
-
-  yield stage('repair', '修复', 'running')
-  const repaired = validated.map((r) => repairIfNeeded(r, constraints, persona, scored).route)
-  yield stage('repair', '修复', 'ok')
-
-  // 7) rank → route event (seconds; before explanation)
-  const ranked = rankRoutes(repaired, constraints, persona)
-  const best = ranked[0]
-  yield { type: 'route', route: stripRoute(best) }
-
-  // 8) explanation (streamed, after route)
-  yield stage('explain', '写推荐理由', 'running')
-  let explanation = ''
-  for await (const delta of deps.streamExplanation(best, constraints)) {
-    explanation += delta
-    yield { type: 'explanation', routeId: best.id, delta }
-  }
-  yield stage('explain', '写推荐理由', 'ok')
-
-  // 9) persist + done
-  const finalRoutes: Route[] = ranked.map((r, i) => (i === 0 ? { ...r, explanation } : r))
-  const dataSources: DataSources = {
-    amapPoi: { configured: true, used: retrieved.amapStatus === 'ok', status: retrieved.amapStatus },
-    amapRoute: { configured: true, used: best.stops.some((s) => s.legFromPrev?.mode === 'walk'), status: 'ok' },
-    deepseek: { configured: !!explanation, used: !!explanation, status: explanation ? 'ok' : 'fallback' },
-    cache: { hits: retrieved.cacheHits, misses: retrieved.cacheMisses },
-  }
-  const planId = deps.planId()
-  await deps.savePlan({
-    id: planId, userId: identity.userId, deviceToken: identity.deviceToken,
-    request: req.request, constraints, routes: finalRoutes, dataSources,
+  // 4-9) shared deterministic tail (score→build→validate→repair→rank→route→explain→done)
+  yield* planFromCandidates(retrieved.pois, constraints, persona, req, identity, deps, {
+    amapStatus: retrieved.amapStatus,
+    cacheHits: retrieved.cacheHits,
+    cacheMisses: retrieved.cacheMisses,
+    center: loc.center ?? undefined,
   })
-  yield { type: 'done', planId, routes: finalRoutes.map(stripRoute), dataSources }
 }
 
 /**
