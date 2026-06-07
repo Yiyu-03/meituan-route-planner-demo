@@ -25,4 +25,32 @@ describe('understand', () => {
     expect(result.constraints.budgetPerCapita).toBe(200)
     expect(result.keywords.length).toBeGreaterThan(0)
   })
+
+  it('extracts a specific-place anchor from the request', async () => {
+    const result = await understand('在新世界城附近吃本帮菜', loc, personaFor('couple'), prefs, {
+      chatJson: async () => ({ anchor: '新世界城', mustCategories: ['dining'], keywords: ['本帮菜'] }),
+    })
+    expect(result.anchor).toBe('新世界城')
+  })
+
+  it('extracts a district-name anchor from the request', async () => {
+    const result = await understand('静安找咖啡', loc, personaFor('solo'), { personaPick: 'solo', prefs: [], budgetPref: null }, {
+      chatJson: async () => ({ anchor: '静安', mustCategories: ['cafe'], keywords: ['咖啡'] }),
+    })
+    expect(result.anchor).toBe('静安')
+  })
+
+  it('returns null anchor when none is given', async () => {
+    const result = await understand('在上海玩', loc, personaFor('friends'), { personaPick: 'friends', prefs: [], budgetPref: null }, {
+      chatJson: async () => ({ anchor: null, mustCategories: [], keywords: ['上海 景点'] }),
+    })
+    expect(result.anchor).toBeNull()
+  })
+
+  it('anchor is null when the LLM is unavailable', async () => {
+    const result = await understand('随便逛逛', loc, personaFor('friends'), { personaPick: 'friends', prefs: [], budgetPref: null }, {
+      chatJson: async () => null,
+    })
+    expect(result.anchor).toBeNull()
+  })
 })

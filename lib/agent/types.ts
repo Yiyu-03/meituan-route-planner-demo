@@ -35,6 +35,8 @@ export interface UnderstandResult {
   constraints: Constraints
   keywords: string[]          // amap search keywords
   llmUsed: boolean
+  /** User-specified anchor (区域名 like 静安, or 具体地点 like 新世界城). null = none given. */
+  anchor: string | null
 }
 
 export type { Category, Constraints, POI, Route, ScoredPOI }
