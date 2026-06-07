@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import type { Route, Constraints } from '../../contract'
 import { CategoryIcon, MetaIcons } from '../design/icons'
-import { Share2, Check } from 'lucide-react'
+import { Share2 } from 'lucide-react'
+import { ShareCardModal } from './ShareCardModal'
 
 function fmtHour(h: number): string {
   const hh = Math.floor(h)
@@ -23,19 +24,8 @@ function themeOf(constraints: Constraints): string {
 
 export function JournalCard({ route, constraints }: { route: Route; constraints: Constraints }) {
   const { pin: Pin, clock: Clock } = MetaIcons
-  const [shared, setShared] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
   const where = [constraints.city, constraints.district].filter(Boolean).join(' · ')
-
-  const onShare = async () => {
-    const text = `漫游·手帐 ｜ ${where}\n${route.stops.map((s, i) => `${i + 1}. ${s.poi.name}`).join('\n')}`
-    const nav = navigator as Navigator & { share?: (d: ShareData) => Promise<void> }
-    if (typeof nav.share === 'function') {
-      try { await nav.share({ title: `漫游·手帐 · ${where}`, text }); return } catch { /* cancelled */ }
-    }
-    try { await navigator.clipboard?.writeText(text) } catch { /* unavailable */ }
-    setShared(true)
-    setTimeout(() => setShared(false), 2400)
-  }
 
   return (
     <section className="paper-card relative overflow-hidden p-5">
@@ -104,13 +94,17 @@ export function JournalCard({ route, constraints }: { route: Route; constraints:
         </div>
         <button
           type="button"
-          onClick={onShare}
-          aria-label="保存为图片或分享"
+          onClick={() => setShareOpen(true)}
+          aria-label="生成手帐图片并分享"
           className="inline-flex items-center gap-1.5 rounded-md border border-[var(--cinnabar)] px-3 py-1 text-[12px] text-[var(--cinnabar)] transition-colors hover:bg-[var(--cinnabar)] hover:text-white"
         >
-          {shared ? (<><Check size={14} strokeWidth={1.8} aria-hidden /> 已复制</>) : (<><Share2 size={14} strokeWidth={1.7} aria-hidden /> 保存 / 分享</>)}
+          <Share2 size={14} strokeWidth={1.7} aria-hidden /> 保存 / 分享
         </button>
       </div>
+
+      {shareOpen && (
+        <ShareCardModal route={route} constraints={constraints} onClose={() => setShareOpen(false)} />
+      )}
     </section>
   )
 }

@@ -62,12 +62,12 @@ describe('JournalCard', () => {
     expect(getByRole('button', { name: /保存|分享|截图/ })).toBeInTheDocument()
   })
 
-  it('invokes the native share API when present', async () => {
-    const share = vi.fn().mockResolvedValue(undefined)
-    vi.stubGlobal('navigator', { ...navigator, share })
-    const { getByRole } = render(<JournalCard route={route} constraints={constraints} />)
+  it('opens the share-card sheet when the entry is clicked', async () => {
+    const { getByRole, queryByRole } = render(<JournalCard route={route} constraints={constraints} />)
+    expect(queryByRole('dialog')).toBeNull()
     await userEvent.click(getByRole('button', { name: /保存|分享|截图/ }))
-    expect(share).toHaveBeenCalled()
-    vi.unstubAllGlobals()
+    // the stitched-card modal renders as a dialog with its own 保存/分享 action
+    const dialog = getByRole('dialog', { name: /分享/ })
+    expect(dialog).toBeInTheDocument()
   })
 })
