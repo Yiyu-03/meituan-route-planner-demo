@@ -10,7 +10,7 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'node',
-          include: ['contract/**/*.test.ts', 'api/**/*.test.ts'],
+          include: ['contract/**/*.test.ts', 'lib/**/*.test.ts'],
           environment: 'node',
         },
       },

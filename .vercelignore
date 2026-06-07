@@ -1,0 +1,6 @@
+**/*.test.ts
+**/__tests__/
+docs/
+scripts/
+tools/
+contract/fixtures/
