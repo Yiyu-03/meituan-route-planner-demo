@@ -11,7 +11,12 @@ function explanationForStop(explanation: string, index: number, count: number, f
   return slice || fallback
 }
 
-export function Itinerary({ route, explanation }: { route: Route; explanation: string }) {
+export function Itinerary({ route, explanation, activeIndex = null, onSelect }: {
+  route: Route
+  explanation: string
+  activeIndex?: number | null
+  onSelect?: (index: number) => void
+}) {
   if (route.stops.length === 0) return null
   return (
     <div className="space-y-3">
@@ -21,6 +26,8 @@ export function Itinerary({ route, explanation }: { route: Route; explanation: s
           index={index}
           stop={stop}
           explanation={explanationForStop(explanation, index, route.stops.length, stop.reasons[0] ?? '')}
+          active={activeIndex === index}
+          onSelect={onSelect}
         />
       ))}
     </div>

@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { StopCard } from './StopCard'
 import type { RouteStop } from '../../contract'
 
@@ -37,5 +38,15 @@ describe('StopCard', () => {
     expect(getByLabelText('导航')).toBeInTheDocument()
     expect(getByLabelText('拨打电话')).toBeInTheDocument()
     expect(getByText('先到靠窗坐下')).toBeInTheDocument()
+  })
+  it('calls onSelect with its index when the card is clicked (map locate)', async () => {
+    const onSelect = vi.fn()
+    const { getByText } = render(<StopCard index={2} stop={stop} explanation="" onSelect={onSelect} />)
+    await userEvent.click(getByText('看得到风景的咖啡馆'))
+    expect(onSelect).toHaveBeenCalledWith(2)
+  })
+  it('marks the active card with aria-current', () => {
+    const { container } = render(<StopCard index={0} stop={stop} explanation="" active />)
+    expect(container.querySelector('[aria-current="true"]')).not.toBeNull()
   })
 })

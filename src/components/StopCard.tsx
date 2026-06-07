@@ -24,17 +24,23 @@ function SourceTag({ label, source }: { label: string; source?: FieldSource }) {
 
 const DOT_BY_INDEX = ['dot-ink', 'dot-cinnabar', 'dot-sage']
 
-export function StopCard({ index, stop, explanation }: {
+export function StopCard({ index, stop, explanation, active = false, onSelect }: {
   index: number
   stop: RouteStop
   explanation: string
+  active?: boolean
+  onSelect?: (index: number) => void
 }) {
   const { poi, sources } = stop
   const photo = poi.photos[0]
   const { navigate: Nav, book: Book, call: Call, save: Save } = ActionIcons
   const { walk: Walk } = MetaIcons
   return (
-    <article className="paper-card relative p-3 sm:p-4">
+    <article
+      onClick={() => onSelect?.(index)}
+      className={`paper-card relative cursor-pointer p-3 transition-shadow sm:p-4 ${active ? 'ring-2 ring-[var(--cinnabar)] ring-offset-1' : 'hover:shadow-md'}`}
+      aria-current={active ? 'true' : undefined}
+    >
       <span className={`absolute -left-2 top-4 inline-flex h-6 w-6 items-center justify-center rounded-full text-[12px] font-semibold text-white ${DOT_BY_INDEX[index % 3]}`}>
         <span className="latin">{index + 1}</span>
       </span>

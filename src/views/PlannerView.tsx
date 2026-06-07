@@ -32,7 +32,11 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
   const [lastRequest, setLastRequest] = useState('')
   const [shelfKey, setShelfKey] = useState(0)
   const [shelfOpen, setShelfOpen] = useState(false)
+  const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const prevPlanId = useRef<string | null>(null)
+
+  // Clear the focused stop whenever the route changes (new plan / replan / loaded).
+  useEffect(() => { setActiveIndex(null) }, [state.route])
 
   // When a new plan finishes streaming and is persisted, refresh the shelf.
   useEffect(() => {
@@ -150,7 +154,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
 
             <main className="grid gap-4 px-4 py-4 lg:px-0 xl:grid-cols-[minmax(0,1fr)_400px]">
               <section className="h-[320px] xl:h-[calc(100vh-220px)]">
-                <RouteMap route={state.route ?? EMPTY_ROUTE} candidates={state.candidates} />
+                <RouteMap route={state.route ?? EMPTY_ROUTE} candidates={state.candidates} activeIndex={activeIndex} />
               </section>
 
               <section className="space-y-3">
@@ -159,7 +163,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
                 ) : state.route ? (
                   <>
                     {state.constraints && <PlanSummary route={state.route} constraints={state.constraints} />}
-                    <Itinerary route={state.route} explanation={routeExplanation} />
+                    <Itinerary route={state.route} explanation={routeExplanation} activeIndex={activeIndex} onSelect={setActiveIndex} />
                     {state.constraints && (
                       <WhyDrawer route={state.route} constraints={state.constraints} dataSources={state.dataSources} />
                     )}
