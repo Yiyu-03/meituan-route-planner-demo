@@ -76,13 +76,14 @@ function topKForSlots(slots: Category[], scored: ScoredPOI[]): Map<number, Score
     arr.push(s)
     byCat.set(s.poi.category, arr)
   }
+  // If this slot's category has no real candidates, fall back to the overall best-scored pool
+  // so the slot can still be filled (a single-category 古迹 citywalk composes 3 distinct 古迹;
+  // a sparse mixed pool still reaches minStops instead of failing as insufficient-data). The
+  // beam's per-category repeat penalty keeps such fallback fills from stacking 3 restaurants
+  // when any other category is available.
   const result = new Map<number, ScoredPOI[]>()
   slots.forEach((cat, idx) => {
     let pool = byCat.get(cat) ?? []
-    // If this slot's category has no real candidates (e.g. a single-category outing
-    // like a 古迹 citywalk where everything is `culture`), fall back to the overall
-    // best-scored candidates so the slot can still be filled. Beam-search dedup keeps
-    // stops distinct, so we get e.g. 3 distinct 古迹 instead of failing to compose.
     if (pool.length === 0) pool = scored
     result.set(idx, pool.slice(0, TOPK_PER_SLOT))
   })
@@ -120,6 +121,10 @@ export function buildRouteCandidates(
   const slots = planSlots(c, persona)
   const slotPools = topKForSlots(slots, clustered)
   const latestEnd = effectiveLatestEnd(c, persona)
+  // How many of each category the plan actually intends (mustCategories + fillers). Picking
+  // more than this of one category gets penalised so routes diversify when alternatives exist.
+  const plannedCount = new Map<Category, number>()
+  for (const s of slots) plannedCount.set(s, (plannedCount.get(s) ?? 0) + 1)
   let beams: PartialRoute[] = [{ picks: [], usedIds: new Set(), scoreSum: 0, penalty: 0 }]
 
   for (let i = 0; i < slots.length; i++) {
@@ -146,11 +151,17 @@ export function buildRouteCandidates(
           legPenalty = travelEstimate(d, persona.walkTolerance).minutes * 0.6
         }
         const waitPenalty = Math.max(0, openOf(cand.poi) - eta) * 6
+        // Diversity nudge: once a beam already holds as many of this category as planned,
+        // each further same-category stop is penalised (scores are 0–100, so ~28 lets a clearly
+        // better food spot still win in a food-dense area, but breaks ties toward variety).
+        const haveCat = beam.picks.reduce((nn, p) => (p.poi.category === cand.poi.category ? nn + 1 : nn), 0)
+        const allowed = Math.max(1, plannedCount.get(cand.poi.category) ?? 1)
+        const repeatPenalty = haveCat >= allowed ? (haveCat - allowed + 1) * 28 : 0
         next.push({
           picks: [...beam.picks, cand],
           usedIds: new Set(beam.usedIds).add(cand.poi.id),
           scoreSum: beam.scoreSum + cand.score,
-          penalty: beam.penalty + legPenalty + waitPenalty,
+          penalty: beam.penalty + legPenalty + waitPenalty + repeatPenalty,
         })
         extended += 1
       }

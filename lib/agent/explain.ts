@@ -34,7 +34,14 @@ function buildPrompt(route: Route, c: Constraints): ChatMessage[] {
     rating: s.poi.rating, perCapita: s.poi.perCapita, reasons: s.reasons,
   }))
   return [
-    { role: 'system', content: '你是本地路线讲解员。用温暖、具体的中文写一段推荐理由，扣住用户的需求与每一站的真实信息，不要编造数据，不要 Markdown。' },
+    { role: 'system', content: [
+      '你是本地路线讲解员，为用户已排好的行程写一段温暖、具体的中文推荐理由。',
+      '硬性要求(必须遵守):',
+      '1. 只能提到 stops 数组里真实存在的地点名；**绝对不要提及、推荐、假设或编造任何 stops 之外的店名/餐厅/景点**(哪怕用户需求里提到了某类而行程里没有，也不要编一个补上，自然略过即可)。',
+      '2. 不要叙述“换成了/改成了/原本是/可以考虑去”这类变更或假设动作——只讲当前这几站本身好在哪、如何串联。',
+      '3. 紧扣用户需求与每一站的真实信息(评分、人均、区域、reasons)，不编造任何数据。',
+      '4. 一段话，不要 Markdown，不要分点。',
+    ].join('\n') },
     { role: 'user', content: JSON.stringify({ request: c.raw, constraints: { prefs: c.prefs, party: c.party, budgetPerCapita: c.budgetPerCapita, diningBudgetPerCapita: c.diningBudgetPerCapita }, stops }) },
   ]
 }

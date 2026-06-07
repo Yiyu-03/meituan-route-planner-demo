@@ -242,8 +242,14 @@ function chooseReplacement(
   usedIds: Set<string>,
 ): ScoredPOI | null {
   const cat = current.poi.category
-  const cands = pool.filter((s) => s.poi.category === cat && s.poi.id !== current.poi.id && !usedIds.has(s.poi.id))
+  let cands = pool.filter((s) => s.poi.category === cat && s.poi.id !== current.poi.id && !usedIds.has(s.poi.id))
   if (cands.length === 0) return null
+  // Keep the same sub-type when we can (换更便宜的火锅 ⇒ 仍是火锅，而不是最便宜的随便一家餐厅)。
+  const cuisine = cuisineOf(current.poi)
+  if (cuisine) {
+    const sameKind = cands.filter((s) => cuisineOf(s.poi) === cuisine)
+    if (sameKind.length > 0) cands = sameKind
+  }
 
   if (op.op === 'cheaper') {
     const cur = current.poi.perCapita ?? Infinity
@@ -350,10 +356,13 @@ const CUISINE_MARKERS = [
   '咖啡', '茶饮', '甜品', '烘焙', '书店', '美术馆', '博物馆', '剧场', '影院',
 ]
 
-/** Pull a distinctive sub-type keyword from a stop's name + tags, e.g. 龙户人家串串香 → 串串香. */
-function cuisineOf(poi: { name: string; tags?: string[] }): string | null {
-  const hay = `${poi.name} ${(poi.tags ?? []).join(' ')}`
-  for (const m of CUISINE_MARKERS) if (hay.includes(m)) return m
+/**
+ * Pull a distinctive sub-type keyword from a stop's NAME, e.g. 龙户人家串串香 → 串串香.
+ * Name only — Amap `tags` are noisy (a 豌杂面 returned by a 火锅 keyword search can carry a
+ * 火锅 tag), which would wrongly let a noodle shop pass as 火锅 in the same-kind filter.
+ */
+function cuisineOf(poi: { name: string }): string | null {
+  for (const m of CUISINE_MARKERS) if (poi.name.includes(m)) return m
   return null
 }
 
