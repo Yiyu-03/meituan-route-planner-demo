@@ -45,7 +45,7 @@ export async function chatJson(p: ChatParams, deps: DeepSeekDeps = {}): Promise<
       body: JSON.stringify({
         model: modelOf(deps),
         temperature: p.temperature ?? 0.2,
-        max_tokens: p.maxTokens ?? 400,
+        max_tokens: p.maxTokens ?? 2000, // deepseek-v4 是推理模型,reasoning_content 会占额度;400 会截断 JSON → 静默退化
         response_format: { type: 'json_object' },
         messages: p.messages,
       }),

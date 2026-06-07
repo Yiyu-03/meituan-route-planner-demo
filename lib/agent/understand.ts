@@ -39,7 +39,7 @@ const CAT_LEX: { cat: Category; words: string[] }[] = [
 ]
 
 const CAT_KEYWORD: Record<Category, string[]> = {
-  dining: ['餐厅', '本帮菜', '美食'],
+  dining: ['餐厅', '当地特色菜', '美食'],
   cafe: ['咖啡', '咖啡馆'],
   culture: ['博物馆', '展览', '书店'],
   entertainment: ['剧场', '电影院'],
