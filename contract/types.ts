@@ -12,7 +12,12 @@ export const PersonaIdSchema = z.enum(['couple', 'family', 'friends', 'solo'])
 export const FieldSourceSchema = z.enum(['amap', 'user', 'derived'])
 export type FieldSource = z.infer<typeof FieldSourceSchema>
 
-/** A POI carries only real Amap fields + user/derived. `.strict()` drops fabricated fields. */
+/**
+ * A POI carries only real Amap fields + user/derived. Uses zod's default *strip* behaviour: extra
+ * keys (e.g. internal `sceneTags`/`avgDuration` that leak into a stored route and come back as
+ * `previousPlan` on a refine) are dropped on parse rather than rejected — so re-submitting a saved
+ * plan never fails validation. Emitted POIs are still cleaned via stripRoute.
+ */
 export const POISchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -29,7 +34,7 @@ export const POISchema = z.object({
   photos: z.array(z.string()).default([]),
   tel: z.string().nullable().default(null),
   source: z.literal('amap'),
-}).strict()
+})
 export type POI = z.infer<typeof POISchema>
 
 export const ScoredPOISchema = z.object({

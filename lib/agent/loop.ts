@@ -127,11 +127,12 @@ export async function* planFromCandidates(
     cache: { hits: opts.cacheHits ?? 0, misses: opts.cacheMisses ?? 0 },
   }
   const planId = deps.planId()
+  const savedRoutes = finalRoutes.map(stripRoute)
   await deps.savePlan({
     id: planId, userId: identity.userId, deviceToken: identity.deviceToken,
-    request: req.request, constraints, routes: finalRoutes, dataSources,
+    request: req.request, constraints, routes: savedRoutes, dataSources,
   })
-  yield { type: 'done', planId, routes: finalRoutes.map(stripRoute), dataSources }
+  yield { type: 'done', planId, routes: savedRoutes, dataSources }
 }
 
 export async function* runPlanLoop(
@@ -336,9 +337,10 @@ async function* runReplanLoop(
     cache: { hits: cacheHits, misses: cacheMisses },
   }
   const planId = deps.planId()
+  const savedRoutes = finalRoutes.map(stripRoute)
   await deps.savePlan({
     id: planId, userId: identity.userId, deviceToken: identity.deviceToken,
-    request: req.request, constraints, routes: finalRoutes, dataSources,
+    request: req.request, constraints, routes: savedRoutes, dataSources,
   })
-  yield { type: 'done', planId, routes: finalRoutes.map(stripRoute), dataSources }
+  yield { type: 'done', planId, routes: savedRoutes, dataSources }
 }

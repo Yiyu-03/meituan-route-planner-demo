@@ -12,15 +12,23 @@ describe('data schemas', () => {
     expect(() => ConstraintsSchema.parse(c)).not.toThrow()
   })
 
-  it('rejects a POI that carries a fabricated review count (strict)', () => {
+  it('strips unknown fields from a POI so they never survive parsing', () => {
     const poi = {
       id: 'B0I6Y7URLT', name: '红子鸡凤凰楼', category: 'dining',
       city: '上海', area: '静安寺', lat: 31.24, lng: 121.44,
       rating: 4.8, perCapita: 137, tags: ['本帮菜'],
       openHour: 10.5, closeHour: 21, photos: [], tel: null,
-      source: 'amap', reviews: 9999, // <-- not in schema, .strict() must reject
+      source: 'amap',
+      reviews: 9999,        // fabricated, not in schema
+      sceneTags: ['quiet'], // internal enrichment that can leak via a stored previousPlan
+      avgDuration: 75,
     }
-    expect(() => ScoredPOISchema.shape.poi.parse(poi)).toThrow()
+    // parse succeeds (re-submitting a saved plan must not 400)…
+    const parsed = ScoredPOISchema.shape.poi.parse(poi)
+    // …but the extra keys are dropped, not carried through
+    expect(parsed).not.toHaveProperty('reviews')
+    expect(parsed).not.toHaveProperty('sceneTags')
+    expect(parsed).not.toHaveProperty('avgDuration')
   })
 
   it('accepts a valid Route with stops', () => {

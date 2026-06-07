@@ -34,7 +34,7 @@ var POISchema = z.object({
   photos: z.array(z.string()).default([]),
   tel: z.string().nullable().default(null),
   source: z.literal("amap")
-}).strict();
+});
 var ScoredPOISchema = z.object({
   poi: POISchema,
   score: z.number(),
@@ -2346,16 +2346,17 @@ async function* planFromCandidates(candidates, constraints, persona, req, identi
     cache: { hits: opts.cacheHits ?? 0, misses: opts.cacheMisses ?? 0 }
   };
   const planId = deps.planId();
+  const savedRoutes = finalRoutes.map(stripRoute);
   await deps.savePlan({
     id: planId,
     userId: identity.userId,
     deviceToken: identity.deviceToken,
     request: req.request,
     constraints,
-    routes: finalRoutes,
+    routes: savedRoutes,
     dataSources
   });
-  yield { type: "done", planId, routes: finalRoutes.map(stripRoute), dataSources };
+  yield { type: "done", planId, routes: savedRoutes, dataSources };
 }
 async function* runPlanLoop(req, identity, deps) {
   const persona = personaFor(req.preferences.personaPick);
@@ -2497,16 +2498,17 @@ async function* runReplanLoop(req, previousPlan, identity, deps, persona) {
     cache: { hits: cacheHits, misses: cacheMisses }
   };
   const planId = deps.planId();
+  const savedRoutes = finalRoutes.map(stripRoute);
   await deps.savePlan({
     id: planId,
     userId: identity.userId,
     deviceToken: identity.deviceToken,
     request: req.request,
     constraints,
-    routes: finalRoutes,
+    routes: savedRoutes,
     dataSources
   });
-  yield { type: "done", planId, routes: finalRoutes.map(stripRoute), dataSources };
+  yield { type: "done", planId, routes: savedRoutes, dataSources };
 }
 
 // lib/agent/react.ts
