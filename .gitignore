@@ -4,4 +4,3 @@ dist/
 *.tsbuildinfo
 .vercel
 .env*.local
-api/plan.js
