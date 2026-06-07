@@ -44,7 +44,20 @@ export function initialPlanState(): PlanState {
   }
 }
 
-type Action = SSEEvent | { type: 'start' } | { type: 'finish' }
+export interface LoadAction {
+  type: 'load'
+  planId: string
+  route: Route
+  constraints: Constraints
+  dataSources: DataSources
+}
+
+type Action =
+  | SSEEvent
+  | { type: 'start' }
+  | { type: 'finish' }
+  | { type: 'reset' }
+  | LoadAction
 
 export function planReducer(state: PlanState, action: Action): PlanState {
   switch (action.type) {
@@ -52,6 +65,17 @@ export function planReducer(state: PlanState, action: Action): PlanState {
       return { ...initialPlanState(), streaming: true }
     case 'finish':
       return { ...state, streaming: false }
+    case 'reset':
+      return initialPlanState()
+    case 'load':
+      return {
+        ...initialPlanState(),
+        planId: action.planId,
+        route: action.route,
+        constraints: action.constraints,
+        dataSources: action.dataSources,
+        explanations: { [action.route.id]: action.route.explanation },
+      }
     case 'stage': {
       const others = state.stages.filter((s) => s.key !== action.key)
       return {
@@ -127,5 +151,15 @@ export function usePlanStream() {
     }
   }, [])
 
-  return { state, run }
+  const loadPlan = useCallback((action: Omit<LoadAction, 'type'>) => {
+    abortRef.current?.abort()
+    dispatch({ type: 'load', ...action })
+  }, [])
+
+  const reset = useCallback(() => {
+    abortRef.current?.abort()
+    dispatch({ type: 'reset' })
+  }, [])
+
+  return { state, run, loadPlan, reset }
 }

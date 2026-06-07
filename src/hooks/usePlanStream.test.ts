@@ -32,4 +32,43 @@ describe('planReducer', () => {
     const s = planReducer(initialPlanState(), err)
     expect(s.error?.code).toBe('insufficient-data')
   })
+  it('loads an existing plan record as current state', () => {
+    const loadedRoute = {
+      id: 'hist-route', stops: [], totalCost: 200, totalWalkMin: 12, totalTransitMin: 0,
+      endTime: 18, coverage: ['cafe'] as const, checks: [],
+      explanation: '历史方案说明', risks: [],
+    }
+    const constraints = {
+      city: '上海', district: '静安', startTime: 14, durationMin: 240, party: 2,
+      budgetPerCapita: 300, diningBudgetPerCapita: null, prefs: [], avoid: [],
+      mustCategories: [] as const, pace: 'normal' as const, personaId: 'couple' as const,
+      raw: '静安咖啡',
+    }
+    const dataSources = {
+      amapPoi: { configured: true, used: true, status: 'ok' },
+      amapRoute: { configured: true, used: true, status: 'ok' },
+      deepseek: { configured: true, used: true, status: 'ok' },
+      cache: { hits: 0, misses: 0 },
+    }
+    const s = planReducer(initialPlanState(), {
+      type: 'load',
+      planId: 'p-hist',
+      route: loadedRoute,
+      constraints,
+      dataSources,
+    })
+    expect(s.route?.id).toBe('hist-route')
+    expect(s.constraints?.city).toBe('上海')
+    expect(s.planId).toBe('p-hist')
+    expect(s.dataSources).toBe(dataSources)
+    expect(s.explanations['hist-route']).toBe('历史方案说明')
+    expect(s.streaming).toBe(false)
+  })
+  it('resets back to the initial input state', () => {
+    const seeded = planReducer(initialPlanState(), route)
+    const s = planReducer(seeded, { type: 'reset' })
+    expect(s.route).toBeNull()
+    expect(s.constraints).toBeNull()
+    expect(s.error).toBeNull()
+  })
 })
