@@ -51,7 +51,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
     const request: PlanRequest = {
       request: value.request,
       preferences: value.preferences,
-      previousPlan: state.route,
+      previousPlan: null, // 生成路线 = 全新规划;基于已有方案的修改走 RefineBar(refine)
     }
     run(request, fixtureOverride ? { fixture: fixtureOverride } : undefined)
   }

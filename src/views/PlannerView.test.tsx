@@ -86,6 +86,26 @@ describe('PlannerView', () => {
     expect(req.previousPlan?.id).toBe('route-0')
   })
 
+  it('生成路线 is always a fresh plan (previousPlan=null) even after a plan exists', async () => {
+    const { getByPlaceholderText, getByRole, findByText } = render(
+      <PlannerView identity={identity} onLogout={() => {}} />,
+    )
+    await userEvent.type(getByPlaceholderText(/静安/), '静安安静咖啡')
+    await userEvent.click(getByRole('button', { name: '生成路线' }))
+    await findByText('看得到风景的咖啡馆')
+
+    // A plan now exists; a second 生成路线 must NOT carry previousPlan (else backend replans).
+    const spy = vi.spyOn(planStreamApi, 'streamPlan').mockResolvedValue(undefined)
+    await userEvent.clear(getByPlaceholderText(/静安/))
+    await userEvent.type(getByPlaceholderText(/静安/), '北京海淀带孩子逛博物馆')
+    await userEvent.click(getByRole('button', { name: '生成路线' }))
+
+    await waitFor(() => expect(spy).toHaveBeenCalled())
+    const [req] = spy.mock.calls[0]
+    expect(req.request).toBe('北京海淀带孩子逛博物馆')
+    expect(req.previousPlan).toBeNull()
+  })
+
   it('loads a plan from the shelf into the main view', async () => {
     vi.mocked(historyApi.listHistory).mockResolvedValue([
       { planId: 'p-hist', request: '外滩夜景散步', createdAt: '2026-05-20T00:00:00Z' },
