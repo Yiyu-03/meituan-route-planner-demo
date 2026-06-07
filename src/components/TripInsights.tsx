@@ -1,102 +1,119 @@
+import type { ReactNode } from 'react'
 import type { Route, Constraints, Category } from '../../contract'
 import { CategoryIcon, MetaIcons } from '../design/icons'
-import { TramFront, TriangleAlert, Sparkles } from 'lucide-react'
+import { TramFront } from 'lucide-react'
 
 const CATEGORY_LABEL: Record<Category, string> = {
-  dining: '餐饮',
-  cafe: '咖啡',
-  culture: '文化',
-  entertainment: '娱乐',
-  shopping: '购物',
-  nightscape: '夜景',
+  dining: '餐饮', cafe: '咖啡', culture: '文化',
+  entertainment: '娱乐', shopping: '购物', nightscape: '夜景',
 }
-
 const ALL_CATEGORIES: Category[] = ['dining', 'cafe', 'culture', 'entertainment', 'shopping', 'nightscape']
 
-/** A pure-CSS horizontal bar. width is a 0..1 ratio. */
-function Bar({ ratio, tone }: { ratio: number; tone: string }) {
-  const pct = Math.max(0, Math.min(1, ratio)) * 100
+/** Small index label, ledger-style. */
+function Label({ children }: { children: ReactNode }) {
   return (
-    <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--hairline)]">
-      <div className="h-full rounded-full" style={{ width: `${pct}%`, background: tone }} />
-    </div>
+    <p className="text-[10.5px] uppercase tracking-[0.22em] text-[var(--ink-soft)]">{children}</p>
   )
 }
 
 export function TripInsights({ route, constraints }: { route: Route; constraints: Constraints }) {
-  const { wallet: Wallet, walk: Walk } = MetaIcons
+  const { walk: Walk } = MetaIcons
   const budget = constraints.budgetPerCapita
-  const overBudget = budget != null && route.totalCost > budget
-  // budget bar ratio: spend vs budget (or vs spend itself when no budget known)
-  const budgetRatio = budget && budget > 0 ? route.totalCost / budget : 1
+  const over = budget != null && route.totalCost > budget
+  const scaleMax = Math.max(route.totalCost, budget ?? 0) * 1.12 || 1
+  const fillPct = (route.totalCost / scaleMax) * 100
+  const notchPct = budget ? (budget / scaleMax) * 100 : 0
 
-  // per-stop per-capita contribution (only stops carrying a perCapita)
   const contributions = route.stops
-    .map((s) => ({ name: s.poi.name, category: s.poi.category, value: s.poi.perCapita ?? 0 }))
+    .map((s) => ({ name: s.poi.name, value: s.poi.perCapita ?? 0 }))
     .filter((c) => c.value > 0)
-  const contribMax = Math.max(1, ...contributions.map((c) => c.value))
 
-  // movement split
   const walk = route.totalWalkMin
   const transit = route.totalTransitMin
   const moveTotal = Math.max(1, walk + transit)
-
-  // covered categories (preserve canonical order)
   const covered = ALL_CATEGORIES.filter((c) => route.coverage.includes(c))
-
-  // reminders: warn/fail check details + risks
   const reminders = [
     ...route.checks.filter((c) => c.status !== 'pass').map((c) => c.detail),
     ...route.risks,
   ].filter(Boolean)
 
   return (
-    <section className="paper-card space-y-4 p-4">
-      <div className="flex items-center gap-1.5">
-        <Sparkles size={16} strokeWidth={1.7} aria-hidden className="text-[var(--amber)]" />
-        <h3 className="hand text-[15px]">行程洞察</h3>
+    <section className="paper-card space-y-5 p-5">
+      <div className="flex items-baseline justify-between border-b border-dashed border-[var(--hairline)] pb-2">
+        <h3 className="hand text-[16px]">行程洞察</h3>
+        <Label>Insights</Label>
       </div>
 
-      {/* 预算 */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between text-[13px]">
-          <span className="inline-flex items-center gap-1 text-[var(--ink-soft)]">
-            <Wallet size={14} strokeWidth={1.7} aria-hidden /> 人均合计
-          </span>
-          <span className="latin">
-            ¥{route.totalCost}
-            {budget != null && <span className="text-[var(--ink-soft)]"> / ¥{budget}</span>}
-          </span>
+      {/* 预算 — 焦点 */}
+      <div>
+        <div className="flex items-end justify-between">
+          <Label>人均花费</Label>
+          {over
+            ? <span className="stamp -rotate-2 text-[12px]">超支 ¥{route.totalCost - (budget ?? 0)}</span>
+            : budget != null && <span className="text-[11px] text-[var(--sage)]">在预算内</span>}
         </div>
-        <Bar ratio={budgetRatio} tone={overBudget ? 'var(--cinnabar)' : 'var(--sage)'} />
-        {overBudget && (
-          <p className="inline-flex items-center gap-1 text-[12px] text-[var(--cinnabar)]">
-            <TriangleAlert size={13} strokeWidth={1.7} aria-hidden />
-            超支 ¥{route.totalCost - (budget ?? 0)}/人
-          </p>
-        )}
+        <div className="mt-1 flex items-baseline gap-1.5">
+          <span className="latin text-[30px] font-semibold leading-none" style={{ color: over ? 'var(--cinnabar)' : 'var(--ink)' }}>
+            ¥{route.totalCost}
+          </span>
+          {budget != null && <span className="latin text-[13px] text-[var(--ink-soft)]">/ 预算 ¥{budget}</span>}
+        </div>
+        {/* 刻度条 + 预算线 */}
+        <div className="relative mt-2.5 h-2 w-full rounded-full bg-[var(--hairline)]">
+          <div
+            className="absolute inset-y-0 left-0 rounded-full"
+            style={{ width: `${Math.min(100, fillPct)}%`, background: over ? 'var(--cinnabar)' : 'var(--sage)' }}
+          />
+          {budget != null && (
+            <span
+              className="absolute -top-1 bottom-[-4px] w-px bg-[var(--ink)]"
+              style={{ left: `${notchPct}%` }}
+              aria-hidden
+            />
+          )}
+        </div>
+        {/* 各站账目:点引线 */}
         {contributions.length > 1 && (
-          <ul className="space-y-1 pt-1">
+          <ul className="mt-3 space-y-1">
             {contributions.map((c, i) => (
-              <li key={i} className="flex items-center gap-2 text-[11px] text-[var(--ink-soft)]">
-                <span className="w-16 shrink-0 truncate hand text-[var(--ink)]">{c.name}</span>
-                <span className="flex-1"><Bar ratio={c.value / contribMax} tone="var(--amber)" /></span>
-                <span className="latin w-10 shrink-0 text-right">¥{c.value}</span>
+              <li key={i} className="flex items-baseline gap-2 text-[12px]">
+                <span className="hand max-w-[55%] truncate text-[var(--ink)]">{c.name}</span>
+                <span className="min-w-0 flex-1 translate-y-[-3px] border-b border-dotted border-[var(--hairline)]" aria-hidden />
+                <span className="latin text-[var(--ink-soft)]">¥{c.value}</span>
               </li>
             ))}
           </ul>
         )}
       </div>
 
+      {/* 移动构成 */}
+      <div className="space-y-2">
+        <Label>移动构成</Label>
+        <div className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--hairline)]">
+          <div style={{ width: `${(walk / moveTotal) * 100}%`, background: 'var(--sage)' }} />
+          <div style={{ width: `${(transit / moveTotal) * 100}%`, background: 'var(--amber)' }} />
+        </div>
+        <div className="flex flex-wrap gap-4 text-[12px] text-[var(--ink-soft)]">
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full" style={{ background: 'var(--sage)' }} aria-hidden />
+            <Walk size={13} strokeWidth={1.7} aria-hidden /> 步行 <span className="latin text-[var(--ink)]">{walk}min</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full" style={{ background: 'var(--amber)' }} aria-hidden />
+            <TramFront size={13} strokeWidth={1.7} aria-hidden /> 车程 <span className="latin text-[var(--ink)]">{transit}min</span>
+          </span>
+        </div>
+      </div>
+
       {/* 类目覆盖 */}
       {covered.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-[12px] text-[var(--ink-soft)]">类目覆盖</p>
+        <div className="space-y-2">
+          <Label>这趟覆盖</Label>
           <div className="flex flex-wrap gap-1.5">
             {covered.map((c) => (
               <span
                 key={c}
-                className="inline-flex items-center gap-1 rounded-full border border-[var(--hairline)] bg-[var(--paper-base)] px-2 py-0.5 text-[12px]"
+                className="inline-flex items-center gap-1 rounded-full border border-[var(--hairline)] bg-[var(--paper-base)] px-2.5 py-1 text-[12px]"
               >
                 <CategoryIcon category={c} size={13} />
                 {CATEGORY_LABEL[c]}
@@ -106,33 +123,13 @@ export function TripInsights({ route, constraints }: { route: Route; constraints
         </div>
       )}
 
-      {/* 移动构成 */}
-      <div className="space-y-1.5">
-        <p className="text-[12px] text-[var(--ink-soft)]">移动构成</p>
-        <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--hairline)]">
-          <div className="h-full" style={{ width: `${(walk / moveTotal) * 100}%`, background: 'var(--sage)' }} />
-          <div className="h-full" style={{ width: `${(transit / moveTotal) * 100}%`, background: 'var(--amber)' }} />
-        </div>
-        <div className="flex flex-wrap gap-3 text-[12px] text-[var(--ink-soft)]">
-          <span className="inline-flex items-center gap-1">
-            <Walk size={13} strokeWidth={1.7} aria-hidden /> 步行 <span className="latin">{walk}min</span>
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <TramFront size={13} strokeWidth={1.7} aria-hidden /> 车程 <span className="latin">{transit}min</span>
-          </span>
-        </div>
-      </div>
-
-      {/* 亮点 & 提醒 */}
+      {/* 提醒 — 便签 */}
       {reminders.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-[12px] text-[var(--ink-soft)]">亮点 & 提醒</p>
+        <div className="space-y-1.5 border-l-2 border-[var(--cinnabar)] pl-3">
+          <Label>留意</Label>
           <ul className="space-y-1">
             {reminders.map((r, i) => (
-              <li key={i} className="flex items-start gap-1.5 text-[12px] leading-5 text-[var(--ink)]">
-                <TriangleAlert size={13} strokeWidth={1.7} aria-hidden className="mt-0.5 shrink-0 text-[var(--amber)]" />
-                <span>{r}</span>
-              </li>
+              <li key={i} className="hand text-[12.5px] leading-5 text-[var(--ink)]">{r}</li>
             ))}
           </ul>
         </div>
