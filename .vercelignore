@@ -1,6 +1,8 @@
 **/*.test.ts
+**/*.test.tsx
 **/__tests__/
 docs/
-scripts/
 tools/
 contract/fixtures/
+scripts/*
+!scripts/build-functions.mjs
