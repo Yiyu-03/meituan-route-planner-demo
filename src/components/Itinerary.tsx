@@ -1,16 +1,11 @@
 import type { Route } from '../../contract'
 import { StopCard } from './StopCard'
 
-/** Split the streamed per-route explanation into one chunk per stop. */
-function explanationForStop(explanation: string, index: number, count: number, fallback: string): string {
-  if (!explanation) return fallback
-  const parts = explanation.split(/(?<=[。！？])/).filter(Boolean)
-  if (parts.length <= 1) return index === 0 ? explanation : fallback
-  const per = Math.ceil(parts.length / count)
-  const slice = parts.slice(index * per, (index + 1) * per).join('')
-  return slice || fallback
-}
-
+/**
+ * The LLM explanation is ONE flowing route narrative ("先到X…随后到Y…") — it must NOT be
+ * sliced per stop (that misaligns sentences onto the wrong cards). We show it once as an
+ * overview, and each StopCard shows its own accurate per-stop reason from scoring.
+ */
 export function Itinerary({ route, explanation, activeIndex = null, onSelect }: {
   route: Route
   explanation: string
@@ -20,12 +15,18 @@ export function Itinerary({ route, explanation, activeIndex = null, onSelect }: 
   if (route.stops.length === 0) return null
   return (
     <div className="space-y-3">
+      {explanation && (
+        <div className="paper-card p-3 sm:p-4">
+          <div className="mb-1 text-[11px] tracking-[0.3em] text-[var(--ink-soft)]">本次安排</div>
+          <p className="hand text-[14px] leading-relaxed text-[var(--ink)]">{explanation}</p>
+        </div>
+      )}
       {route.stops.map((stop, index) => (
         <StopCard
           key={`${stop.poi.id}-${index}`}
           index={index}
           stop={stop}
-          explanation={explanationForStop(explanation, index, route.stops.length, stop.reasons[0] ?? '')}
+          explanation={stop.reasons[0] ?? ''}
           active={activeIndex === index}
           onSelect={onSelect}
         />

@@ -27,6 +27,14 @@ describe('Itinerary', () => {
     expect(getByRole('heading', { name: '咖啡馆' })).toBeInTheDocument()
     expect(getByRole('heading', { name: '本帮菜' })).toBeInTheDocument()
   })
+  it('shows the route narrative ONCE as an overview (not sliced onto wrong cards)', () => {
+    const narrative = '先到咖啡馆坐坐，随后步行去本帮菜馆吃晚饭。'
+    const { getAllByText, getByText } = render(<Itinerary route={route} explanation={narrative} />)
+    expect(getAllByText(narrative)).toHaveLength(1)
+    expect(getByText('本次安排')).toBeInTheDocument()
+    // each card shows its OWN accurate reason (unique reason text)
+    expect(getByText('安静')).toBeInTheDocument()
+  })
   it('renders nothing when route has no stops', () => {
     const empty = { ...route, stops: [] }
     const { container } = render(<Itinerary route={empty} explanation="" />)
