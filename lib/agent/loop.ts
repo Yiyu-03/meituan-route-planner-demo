@@ -2,10 +2,11 @@ import type { Constraints, DataSources, PlanRequest, POI, Route, ScoredPOI, SSEE
 import type { EnrichedPOI, RetrieveResult, UnderstandResult } from './types'
 import { personaFor } from './persona'
 import { scorePOIs } from './score'
-import { buildRouteCandidates } from './build'
+import { buildRouteCandidates, materializeRoute } from './build'
 import { validateRoute } from './validate'
 import { repairIfNeeded } from './repair'
 import { rankRoutes } from './rank'
+import { parseEditIntent, applyEdit, constraintsFromPrev, keywordsForEdit, prevCenter } from './replan'
 
 export interface LoopDeps {
   resolveLocation: (raw: string) => Promise<{ status: string; city: string | null; district?: string | null; center?: { lat: number; lng: number }; message?: string }>
@@ -40,6 +41,12 @@ export async function* runPlanLoop(
   req: PlanRequest, identity: LoopIdentity, deps: LoopDeps,
 ): AsyncGenerator<SSEEvent> {
   const persona = personaFor(req.preferences.personaPick)
+
+  // ── replan branch: minimal edit over an existing plan ──────────────────
+  if (req.previousPlan != null && req.previousPlan.stops.length >= 2) {
+    yield* runReplanLoop(req, req.previousPlan, identity, deps, persona)
+    return
+  }
 
   // 1) resolveLocation
   yield stage('resolve', '定位城市', 'running')
@@ -125,6 +132,104 @@ export async function* runPlanLoop(
     amapRoute: { configured: true, used: best.stops.some((s) => s.legFromPrev?.mode === 'walk'), status: 'ok' },
     deepseek: { configured: !!explanation, used: !!explanation, status: explanation ? 'ok' : 'fallback' },
     cache: { hits: retrieved.cacheHits, misses: retrieved.cacheMisses },
+  }
+  const planId = deps.planId()
+  await deps.savePlan({
+    id: planId, userId: identity.userId, deviceToken: identity.deviceToken,
+    request: req.request, constraints, routes: finalRoutes, dataSources,
+  })
+  yield { type: 'done', planId, routes: finalRoutes.map(stripRoute), dataSources }
+}
+
+/**
+ * Replan: keep the previous plan's stops, retrieve fresh same-category real POIs
+ * for the targeted node, apply the minimal edit, then run the identical
+ * validate→repair→rank→explain→done pipeline so the frontend renders it the same.
+ */
+async function* runReplanLoop(
+  req: PlanRequest, previousPlan: Route, identity: LoopIdentity, deps: LoopDeps, persona: ReturnType<typeof personaFor>,
+): AsyncGenerator<SSEEvent> {
+  const op = parseEditIntent(req.request, previousPlan)
+  const constraints = constraintsFromPrev(previousPlan, persona, op)
+
+  // 1) understand the edit (deterministic op; LLM-free stage for parity)
+  yield stage('understand', '读懂修改需求', 'running')
+  yield stage('understand', '读懂修改需求', 'ok', { summary: `在改方案 · ${op.op}` })
+  yield { type: 'constraints', constraints }
+
+  // 2) retrieve fresh real candidates for the targeted category(ies)
+  const center = prevCenter(previousPlan)
+  const loc = { city: constraints.city, district: constraints.district, center }
+  yield stage('retrieve', '召回替换候选', 'running')
+  let pool: EnrichedPOI[] = []
+  let amapStatus: 'ok' | 'empty' | 'not_configured' | 'error' = 'ok'
+  let cacheHits = 0
+  let cacheMisses = 0
+  const needsRetrieve = op.op !== 'remove'
+  if (needsRetrieve) {
+    const retrieved = await deps.retrieve(keywordsForEdit(op, previousPlan), loc)
+    pool = retrieved.pois
+    amapStatus = retrieved.amapStatus
+    cacheHits = retrieved.cacheHits
+    cacheMisses = retrieved.cacheMisses
+    if (pool.length === 0 && (amapStatus === 'error' || amapStatus === 'not_configured')) {
+      yield stage('retrieve', '召回替换候选', 'fail')
+      yield { type: 'error', code: 'upstream-unavailable', message: '高德 POI 服务暂不可用，未编造替换地点。', recoverable: true }
+      return
+    }
+    yield stage('retrieve', '召回替换候选', 'ok', { summary: `${pool.length} 家真实候选` })
+  } else {
+    yield stage('retrieve', '召回替换候选', 'skip')
+  }
+
+  // 3) score the fresh pool so replacement selection + repair use real scores
+  yield stage('score', '打分', 'running')
+  const scoredPool = scorePOIs(pool, constraints, persona, center.lat, center.lng)
+  yield stage('score', '打分', 'ok')
+
+  // 4) apply the minimal edit (kept stops untouched)
+  yield stage('build', '改方案', 'running')
+  const { picks, changed, note } = applyEdit(op, previousPlan, scoredPool, constraints)
+  if (picks.length < 2) {
+    yield stage('build', '改方案', 'fail')
+    yield { type: 'error', code: 'insufficient-data', message: '修改后行程过短，无法成行。', recoverable: true }
+    return
+  }
+  yield stage('build', '改方案', changed ? 'ok' : 'skip', { summary: note })
+
+  // 5) materialize → validate → repair (reuse the same core)
+  let route = materializeRoute(picks, constraints, persona, 0)
+  yield stage('validate', '体检', 'running')
+  route = { ...route, checks: validateRoute(route, constraints, persona) }
+  yield stage('validate', '体检', 'ok')
+
+  yield stage('repair', '修复', 'running')
+  // repair pool = kept-stop picks + fresh candidates, so it can downgrade/swap safely
+  const repairPool = [...picks.map((p) => ({ ...p })), ...scoredPool]
+  route = repairIfNeeded(route, constraints, persona, repairPool).route
+  yield stage('repair', '修复', 'ok')
+
+  // 6) rank (single route) → route event before explanation
+  const ranked = rankRoutes([route], constraints, persona)
+  const best = ranked[0]
+  yield { type: 'route', route: stripRoute(best) }
+
+  // 7) explanation
+  yield stage('explain', '写推荐理由', 'running')
+  let explanation = ''
+  for await (const delta of deps.streamExplanation(best, constraints)) {
+    explanation += delta
+    yield { type: 'explanation', routeId: best.id, delta }
+  }
+  yield stage('explain', '写推荐理由', 'ok')
+
+  // 8) persist + done
+  const finalRoutes: Route[] = ranked.map((r, i) => (i === 0 ? { ...r, explanation } : r))
+  const dataSources: DataSources = {
+    amapPoi: { configured: true, used: amapStatus === 'ok' && needsRetrieve, status: amapStatus },
+    amapRoute: { configured: true, used: best.stops.some((s) => s.legFromPrev?.mode === 'walk'), status: 'ok' },
+    deepseek: { configured: !!explanation, used: !!explanation, status: explanation ? 'ok' : 'fallback' },
+    cache: { hits: cacheHits, misses: cacheMisses },
   }
   const planId = deps.planId()
   await deps.savePlan({

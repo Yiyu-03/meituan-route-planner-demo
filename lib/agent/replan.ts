@@ -1,4 +1,6 @@
-import type { Category, Route } from '../../contract/index'
+import type { Category, Constraints, Route, ScoredPOI } from '../../contract/index'
+import type { EnrichedPOI, Persona } from './types'
+import { distBetween } from './geo'
 
 export type EditOpKind =
   | 'cheaper' | 'closer' | 'higher_rated' | 'swap' | 'remove' | 'add' | 'rebudget'
@@ -113,3 +115,192 @@ export function parseEditIntent(request: string, prev: Route): EditOp {
   // best-effort fallback
   return { op: 'swap', targetIndex: target, targetCategory: cat, raw }
 }
+
+// ------------------------------------------------------------
+// Constraints reconstruction + minimal-edit application.
+// ------------------------------------------------------------
+
+const CAT_KEYWORD: Record<Category, string[]> = {
+  dining: ['餐厅', '美食'],
+  cafe: ['咖啡', '咖啡馆'],
+  culture: ['博物馆', '展览', '书店'],
+  entertainment: ['剧场', '电影院'],
+  shopping: ['商场', '购物中心'],
+  nightscape: ['观景', '夜景'],
+}
+
+/** Amap search keywords for a single target category, scoped to the plan's area/city. */
+export function replanKeywords(prev: Route, cat: Category): string[] {
+  const first = prev.stops[0]?.poi
+  const scope = first?.area || first?.city || ''
+  return CAT_KEYWORD[cat].map((t) => (scope ? `${scope} ${t}` : t)).slice(0, 4)
+}
+
+/** Centroid of the previous plan's real stops — a proximity anchor derived from real coords. */
+export function prevCenter(prev: Route): { lat: number; lng: number } {
+  const n = Math.max(1, prev.stops.length)
+  return {
+    lat: prev.stops.reduce((s, st) => s + st.poi.lat, 0) / n,
+    lng: prev.stops.reduce((s, st) => s + st.poi.lng, 0) / n,
+  }
+}
+
+/**
+ * Reconstruct constraints from the previous plan so validate/repair/rank can run.
+ * Budget comes from the rebudget op; otherwise left null (loose). mustCategories
+ * derive from the plan's actual coverage. Times/party/pace from persona + plan.
+ */
+export function constraintsFromPrev(prev: Route, persona: Persona, op: EditOp): Constraints {
+  const start = prev.stops[0]?.arrive ?? persona.latestEnd - 6
+  const durationMin = Math.max(120, Math.round((prev.endTime - start) * 60))
+  const first = prev.stops[0]?.poi
+  const must = [...new Set(prev.stops.map((s) => s.poi.category))] as Category[]
+  return {
+    city: first?.city ?? '',
+    district: first?.area ?? null,
+    startTime: start,
+    durationMin,
+    party: persona.partyDefault,
+    budgetPerCapita: op.op === 'rebudget' && op.newBudget != null ? op.newBudget : null,
+    diningBudgetPerCapita: null,
+    prefs: [],
+    avoid: [],
+    mustCategories: must,
+    pace: persona.pace,
+    personaId: persona.id,
+    raw: op.raw,
+  }
+}
+
+/** A kept previous stop, lifted into a ScoredPOI the build/repair core can consume. */
+function keptPick(stop: Route['stops'][number]): ScoredPOI {
+  return { poi: stop.poi, score: 0, reasons: stop.reasons, sources: stop.sources }
+}
+
+/** Pick the best fresh same-category replacement candidate for an op, or null. */
+function chooseReplacement(
+  op: EditOp,
+  current: ScoredPOI,
+  pool: ScoredPOI[],
+  prev: Route,
+  targetIndex: number,
+  usedIds: Set<string>,
+): ScoredPOI | null {
+  const cat = current.poi.category
+  const cands = pool.filter((s) => s.poi.category === cat && s.poi.id !== current.poi.id && !usedIds.has(s.poi.id))
+  if (cands.length === 0) return null
+
+  if (op.op === 'cheaper') {
+    const cur = current.poi.perCapita ?? Infinity
+    const cheaper = cands.filter((s) => (s.poi.perCapita ?? Infinity) < cur)
+    return cheaper.sort((a, b) => (a.poi.perCapita ?? 0) - (b.poi.perCapita ?? 0) || b.score - a.score)[0] ?? null
+  }
+  if (op.op === 'higher_rated') {
+    const cur = current.poi.rating ?? -Infinity
+    const higher = cands.filter((s) => (s.poi.rating ?? -Infinity) > cur)
+    return higher.sort((a, b) => (b.poi.rating ?? 0) - (a.poi.rating ?? 0) || b.score - a.score)[0] ?? null
+  }
+  if (op.op === 'closer') {
+    const neighbor = prev.stops[targetIndex - 1]?.poi ?? prev.stops[targetIndex + 1]?.poi
+    if (!neighbor) return cands.sort((a, b) => b.score - a.score)[0] ?? null
+    const curD = distBetween(current.poi, neighbor)
+    const closer = cands.filter((s) => distBetween(s.poi, neighbor) < curD)
+    return closer.sort((a, b) => distBetween(a.poi, neighbor) - distBetween(b.poi, neighbor) || b.score - a.score)[0] ?? null
+  }
+  // swap / add → best unused same-category by score
+  return cands.sort((a, b) => b.score - a.score)[0] ?? null
+}
+
+export interface ApplyEditResult {
+  picks: ScoredPOI[]
+  changed: boolean
+  note: string
+}
+
+/**
+ * Apply a minimal edit to the previous plan's stops.
+ * Returns the new pick list (kept stops untouched) plus whether anything changed.
+ * Replacement candidates come only from the freshly retrieved `scoredPool`.
+ */
+export function applyEdit(
+  op: EditOp, prev: Route, scoredPool: ScoredPOI[], constraints: Constraints,
+): ApplyEditResult {
+  const picks: ScoredPOI[] = prev.stops.map(keptPick)
+  const usedIds = new Set(picks.map((p) => p.poi.id))
+
+  // resolve a concrete target index when one is implied
+  let idx = op.targetIndex
+  if (idx == null && op.targetCategory) {
+    const found = prev.stops.findIndex((s) => s.poi.category === op.targetCategory)
+    if (found >= 0) idx = found
+  }
+
+  if (op.op === 'remove') {
+    if (idx == null || idx < 0 || idx >= picks.length) {
+      return { picks, changed: false, note: '没找到要删除的站点，方案保持不变。' }
+    }
+    if (picks.length <= 2) {
+      return { picks, changed: false, note: '只剩两站，删掉会让行程过短，已保留原站点。' }
+    }
+    const removed = picks[idx]
+    picks.splice(idx, 1)
+    return { picks, changed: true, note: `已去掉「${removed.poi.name}」这一站。` }
+  }
+
+  if (op.op === 'add') {
+    const cat: Category = op.targetCategory ?? 'cafe'
+    const add = scoredPool
+      .filter((s) => s.poi.category === cat && !usedIds.has(s.poi.id))
+      .sort((a, b) => b.score - a.score)[0]
+    if (!add) {
+      return { picks, changed: false, note: '该区域没有可补充的真实候选，方案保持不变。' }
+    }
+    picks.push(add)
+    return { picks, changed: true, note: `已加入一站「${add.poi.name}」。` }
+  }
+
+  if (op.op === 'rebudget') {
+    // budget already lives in constraints; repair will downgrade overspending stops.
+    return { picks, changed: true, note: `已把整体预算调整为 ¥${op.newBudget}，并对超支站点降档。` }
+  }
+
+  // cheaper / closer / higher_rated / swap → replace one targeted stop
+  if (idx == null) {
+    // no explicit target → pick the stop that best fits the criterion intent
+    if (op.op === 'cheaper') {
+      idx = picks.reduce((best, p, i) => ((p.poi.perCapita ?? 0) > (picks[best].poi.perCapita ?? 0) ? i : best), 0)
+    } else if (op.op === 'higher_rated') {
+      idx = picks.reduce((best, p, i) => ((p.poi.rating ?? 5) < (picks[best].poi.rating ?? 5) ? i : best), 0)
+    } else {
+      idx = 0
+    }
+  }
+  if (idx < 0 || idx >= picks.length) {
+    return { picks, changed: false, note: '没定位到要替换的站点，方案保持不变。' }
+  }
+  const current = picks[idx]
+  const repl = chooseReplacement(op, current, scoredPool, prev, idx, usedIds)
+  if (!repl) {
+    return { picks, changed: false, note: `没有找到更合适的同类真实候选，已保留「${current.poi.name}」。` }
+  }
+  picks[idx] = repl
+  return { picks, changed: true, note: `已把「${current.poi.name}」换成「${repl.poi.name}」。` }
+}
+
+/** Search keywords covering the categories an op may need to retrieve fresh candidates for. */
+export function keywordsForEdit(op: EditOp, prev: Route): string[] {
+  let cat = op.targetCategory
+  if (!cat && op.targetIndex != null) cat = prev.stops[op.targetIndex]?.poi.category
+  if (!cat && op.op === 'cheaper') {
+    const i = prev.stops.reduce((best, s, idx) => ((s.poi.perCapita ?? 0) > (prev.stops[best].poi.perCapita ?? 0) ? idx : best), 0)
+    cat = prev.stops[i]?.poi.category
+  }
+  if (op.op === 'rebudget') {
+    // need cheaper options across every paid category
+    const cats = [...new Set(prev.stops.filter((s) => (s.poi.perCapita ?? 0) > 0).map((s) => s.poi.category))] as Category[]
+    return [...new Set(cats.flatMap((c) => replanKeywords(prev, c)))].slice(0, 8)
+  }
+  if (!cat) cat = prev.stops[0]?.poi.category ?? 'dining'
+  return replanKeywords(prev, cat)
+}
+
