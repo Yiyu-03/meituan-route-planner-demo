@@ -8,6 +8,8 @@ import { AgentThinking } from '../components/AgentThinking'
 import { AgentQuestion } from '../components/AgentQuestion'
 import { PlanSummary } from '../components/PlanSummary'
 import { Itinerary } from '../components/Itinerary'
+import { TripInsights } from '../components/TripInsights'
+import { JournalCard } from '../components/JournalCard'
 import { WhyDrawer } from '../components/WhyDrawer'
 import { EmptyState } from '../components/EmptyState'
 import { AccountMenu } from '../components/AccountMenu'
@@ -155,9 +157,18 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
             </div>
 
             <main className="grid gap-4 px-4 py-4 lg:px-0 xl:grid-cols-[minmax(0,1fr)_400px]">
-              <section className="h-[320px] xl:h-[calc(100vh-220px)]">
-                <RouteMap route={state.route ?? EMPTY_ROUTE} candidates={state.candidates} activeIndex={activeIndex} />
-              </section>
+              {/* 左列:地图 + (有方案时)桌面端在地图下方填充洞察/手帐卡 */}
+              <div className="flex min-w-0 flex-col gap-4">
+                <section className="h-[320px] xl:h-[calc(100vh-220px)]">
+                  <RouteMap route={state.route ?? EMPTY_ROUTE} candidates={state.candidates} activeIndex={activeIndex} />
+                </section>
+                {state.route && state.constraints && (
+                  <div className="hidden space-y-4 xl:block">
+                    <TripInsights route={state.route} constraints={state.constraints} />
+                    <JournalCard route={state.route} constraints={state.constraints} />
+                  </div>
+                )}
+              </div>
 
               <section className="space-y-3">
                 {/* 思考流:规划中实时展开;有方案后折叠备查 */}
@@ -178,6 +189,13 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
                     <Itinerary route={state.route} explanation={routeExplanation} activeIndex={activeIndex} onSelect={setActiveIndex} />
                     {state.constraints && (
                       <WhyDrawer route={state.route} constraints={state.constraints} dataSources={state.dataSources} />
+                    )}
+                    {/* 移动/中屏:桌面卡在左列地图下,这里仅在 < xl 堆叠呈现 */}
+                    {state.constraints && (
+                      <div className="space-y-3 xl:hidden">
+                        <TripInsights route={state.route} constraints={state.constraints} />
+                        <JournalCard route={state.route} constraints={state.constraints} />
+                      </div>
                     )}
                     <RefineBar onRefine={refine} busy={state.streaming} />
                   </>

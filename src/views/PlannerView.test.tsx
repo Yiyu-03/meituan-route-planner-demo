@@ -46,12 +46,28 @@ beforeEach(() => {
 
 describe('PlannerView', () => {
   it('streams the happy-path fixture into a rendered itinerary', async () => {
-    const { getByPlaceholderText, getByRole, findByText } = render(
+    const { getByPlaceholderText, getByRole, findAllByText } = render(
       <PlannerView identity={identity} onLogout={() => {}} />,
     )
     await userEvent.type(getByPlaceholderText(/静安/), '静安安静咖啡')
     await userEvent.click(getByRole('button', { name: '生成路线' }))
-    expect(await findByText('看得到风景的咖啡馆')).toBeInTheDocument()
+    // name appears in StopCard (and is echoed in JournalCard's stop list)
+    expect((await findAllByText('看得到风景的咖啡馆')).length).toBeGreaterThan(0)
+  })
+
+  it('shows TripInsights and JournalCard once a route exists', async () => {
+    const { getByPlaceholderText, getByRole, findAllByText } = render(
+      <PlannerView identity={identity} onLogout={() => {}} />,
+    )
+    await userEvent.type(getByPlaceholderText(/静安/), '静安安静咖啡')
+    await userEvent.click(getByRole('button', { name: '生成路线' }))
+    await findAllByText('看得到风景的咖啡馆')
+    // TripInsights heading (rendered in both desktop+stacked slots in jsdom)
+    expect((await findAllByText('行程洞察')).length).toBeGreaterThan(0)
+    // JournalCard share entry
+    expect((await findAllByText(/保存 \/ 分享/)).length).toBeGreaterThan(0)
+    // brand line from the journal card cover appears
+    expect((await findAllByText(/漫游·手帐/)).length).toBeGreaterThan(0)
   })
 
   it('renders the honest empty state from the clarification fixture', async () => {
@@ -64,12 +80,12 @@ describe('PlannerView', () => {
   })
 
   it('shows RefineBar once a route exists and refines with previousPlan = current route', async () => {
-    const { getByPlaceholderText, getByRole, findByText, findByPlaceholderText } = render(
+    const { getByPlaceholderText, getByRole, findAllByText, findByPlaceholderText } = render(
       <PlannerView identity={identity} onLogout={() => {}} />,
     )
     await userEvent.type(getByPlaceholderText(/静安/), '静安安静咖啡')
     await userEvent.click(getByRole('button', { name: '生成路线' }))
-    await findByText('看得到风景的咖啡馆')
+    await findAllByText('看得到风景的咖啡馆')
 
     // RefineBar is now visible
     const refineInput = await findByPlaceholderText(/微调这条路线/)
@@ -87,12 +103,12 @@ describe('PlannerView', () => {
   })
 
   it('生成路线 is always a fresh plan (previousPlan=null) even after a plan exists', async () => {
-    const { getByPlaceholderText, getByRole, findByText } = render(
+    const { getByPlaceholderText, getByRole, findAllByText } = render(
       <PlannerView identity={identity} onLogout={() => {}} />,
     )
     await userEvent.type(getByPlaceholderText(/静安/), '静安安静咖啡')
     await userEvent.click(getByRole('button', { name: '生成路线' }))
-    await findByText('看得到风景的咖啡馆')
+    await findAllByText('看得到风景的咖啡馆')
 
     // A plan now exists; a second 生成路线 must NOT carry previousPlan (else backend replans).
     const spy = vi.spyOn(planStreamApi, 'streamPlan').mockResolvedValue(undefined)
@@ -107,15 +123,15 @@ describe('PlannerView', () => {
   })
 
   it('renders the agent thinking trail then the finished route from the react fixture', async () => {
-    const { getByPlaceholderText, getByRole, findByText } = render(
+    const { getByPlaceholderText, getByRole, findByText, findAllByText } = render(
       <PlannerView identity={identity} onLogout={() => {}} fixtureOverride="react-thinking" />,
     )
     await userEvent.type(getByPlaceholderText(/静安/), '北京海淀带孩子')
     await userEvent.click(getByRole('button', { name: '生成路线' }))
     // the thinking trail section is present (folds once done, but its header remains)
     expect(await findByText('思考过程')).toBeInTheDocument()
-    // and the finished route from the fixture shows up
-    expect(await findByText('海淀公园')).toBeInTheDocument()
+    // and the finished route from the fixture shows up (echoed in JournalCard too)
+    expect((await findAllByText('海淀公园')).length).toBeGreaterThan(0)
   })
 
   it('shows AgentQuestion when the agent asks, and resumes with conversationId + answer', async () => {
@@ -143,13 +159,13 @@ describe('PlannerView', () => {
     vi.mocked(historyApi.listHistory).mockResolvedValue([
       { planId: 'p-hist', request: '外滩夜景散步', createdAt: '2026-05-20T00:00:00Z' },
     ])
-    const { findByRole, findByText } = render(
+    const { findByRole, findByText, findAllByText } = render(
       <PlannerView identity={identity} onLogout={() => {}} />,
     )
     const tag = await findByRole('button', { name: /外滩夜景散步/ })
     await userEvent.click(tag)
     // loaded route content appears (constraints city + refine bar)
     expect(await findByText(/微调这条路线/)).toBeInTheDocument()
-    expect(await findByText(/黄浦/)).toBeInTheDocument()
+    expect((await findAllByText(/黄浦/)).length).toBeGreaterThan(0)
   })
 })
