@@ -1,7 +1,7 @@
-import { hashPassword, newToken, sessionExpiry } from '../lib/auth.js'
-import { createUser, findUserByUsername, createSession } from '../lib/db/users.js'
-import { migrateGuestPlans } from '../lib/db/history.js'
-import { hasDatabase } from '../lib/db/client.js'
+import { hashPassword, newToken, sessionExpiry } from '../../lib/auth.js'
+import { createUser, findUserByUsername, createSession } from '../../lib/db/users.js'
+import { migrateGuestPlans } from '../../lib/db/history.js'
+import { hasDatabase } from '../../lib/db/client.js'
 
 function readBody(req) {
   if (!req.body) return {}

@@ -1,4 +1,4 @@
-import type { Category, Constraints, POI, Route, ScoredPOI } from '../../../contract/index'
+import type { Category, Constraints, POI, Route, ScoredPOI } from '../../contract/index'
 
 /** Internal persona: scene weights + behavioural defaults. NOT part of the frozen contract. */
 export type SceneTag =

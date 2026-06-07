@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { runPlanLoop } from './loop'
-import { SSEEventSchema } from '../../../contract/index'
+import { SSEEventSchema } from '../../contract/index'
 import type { EnrichedPOI } from './types'
 
 function poi(over: Partial<EnrichedPOI>): EnrichedPOI {

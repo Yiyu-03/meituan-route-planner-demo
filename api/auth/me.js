@@ -1,6 +1,6 @@
-import { parseBearer } from '../lib/auth.js'
-import { userForSession } from '../lib/db/users.js'
-import { hasDatabase } from '../lib/db/client.js'
+import { parseBearer } from '../../lib/auth.js'
+import { userForSession } from '../../lib/db/users.js'
+import { hasDatabase } from '../../lib/db/client.js'
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Use GET' })

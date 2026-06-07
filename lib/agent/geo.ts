@@ -1,4 +1,4 @@
-import type { POI } from '../../../contract/index'
+import type { POI } from '../../contract/index'
 
 /** Haversine great-circle distance in metres. */
 export function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {

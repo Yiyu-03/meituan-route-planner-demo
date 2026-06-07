@@ -1,4 +1,4 @@
-import type { Constraints, Route, ScoredPOI } from '../../../contract/index'
+import type { Constraints, Route, ScoredPOI } from '../../contract/index'
 import type { Persona } from './types'
 import { materializeRoute } from './build'
 import { validateRoute } from './validate'

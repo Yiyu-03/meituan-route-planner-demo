@@ -1,4 +1,4 @@
-import type { Constraints, Route } from '../../../contract/index'
+import type { Constraints, Route } from '../../contract/index'
 import type { Persona } from './types'
 import { checkSummary } from './validate'
 

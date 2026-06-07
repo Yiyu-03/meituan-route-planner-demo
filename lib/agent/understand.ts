@@ -1,4 +1,4 @@
-import type { Category, Constraints } from '../../../contract/index'
+import type { Category, Constraints } from '../../contract/index'
 import type { Persona, SceneTag } from './types'
 
 export interface ResolvedLocation {

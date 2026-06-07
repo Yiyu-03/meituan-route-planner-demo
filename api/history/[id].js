@@ -1,5 +1,5 @@
-import { getPlan } from '../lib/db/history.js'
-import { hasDatabase } from '../lib/db/client.js'
+import { getPlan } from '../../lib/db/history.js'
+import { hasDatabase } from '../../lib/db/client.js'
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Use GET' })

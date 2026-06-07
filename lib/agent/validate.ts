@@ -1,4 +1,4 @@
-import type { Check, Constraints, Route } from '../../../contract/index'
+import type { Check, Constraints, Route } from '../../contract/index'
 import type { Persona } from './types'
 
 function fmtH(h: number): string {

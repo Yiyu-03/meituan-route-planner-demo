@@ -1,4 +1,4 @@
-import type { Constraints, DataSources, PlanRequest, POI, Route, ScoredPOI, SSEEvent } from '../../../contract/index'
+import type { Constraints, DataSources, PlanRequest, POI, Route, ScoredPOI, SSEEvent } from '../../contract/index'
 import type { EnrichedPOI, RetrieveResult, UnderstandResult } from './types'
 import { personaFor } from './persona'
 import { scorePOIs } from './score'

@@ -1,4 +1,4 @@
-import type { Constraints, Route } from '../../../contract/index'
+import type { Constraints, Route } from '../../contract/index'
 import { chatStream, type ChatMessage } from '../deepseek/client'
 
 const CATEGORY_LABEL: Record<string, string> = {

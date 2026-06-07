@@ -1,4 +1,4 @@
-import type { Category, Constraints, Route, RouteStop, ScoredPOI } from '../../../contract/index'
+import type { Category, Constraints, Route, RouteStop, ScoredPOI } from '../../contract/index'
 import type { Persona } from './types'
 import { distBetween, travelEstimate } from './geo'
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { scorePOIs, SCORE_WEIGHTS } from './score'
 import { personaFor } from './persona'
 import type { EnrichedPOI } from './types'
-import type { Constraints } from '../../../contract/index'
+import type { Constraints } from '../../contract/index'
 
 function poi(over: Partial<EnrichedPOI>): EnrichedPOI {
   return {

@@ -1,4 +1,4 @@
-import type { Category, Constraints } from '../../../contract/index'
+import type { Category, Constraints } from '../../contract/index'
 import type { Persona, UnderstandResult } from './types'
 import { parseConstraintsFallback, fallbackKeywords, type ResolvedLocation } from './understand'
 import { chatJson } from '../deepseek/client'

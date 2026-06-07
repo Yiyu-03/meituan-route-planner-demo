@@ -1,4 +1,4 @@
-import type { Constraints, ScoredPOI, FieldSource } from '../../../contract/index'
+import type { Constraints, ScoredPOI, FieldSource } from '../../contract/index'
 import type { EnrichedPOI, Persona, SceneTag } from './types'
 import { haversineM } from './geo'
 
