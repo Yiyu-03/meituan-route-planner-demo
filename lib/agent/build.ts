@@ -1,6 +1,6 @@
-import type { Category, Constraints, Route, RouteStop, ScoredPOI } from '../../contract/index'
-import type { Persona } from './types'
-import { distBetween, travelEstimate } from './geo'
+import type { Category, Constraints, Route, RouteStop, ScoredPOI } from '../../contract/index.js'
+import type { Persona } from './types.js'
+import { distBetween, travelEstimate } from './geo.js'
 
 const BEAM = 6
 const TOPK_PER_SLOT = 7

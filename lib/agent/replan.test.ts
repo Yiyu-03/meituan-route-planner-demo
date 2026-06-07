@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { parseEditIntent, parseEditIntentLLM } from './replan'
-import type { Route, RouteStop, POI } from '../../contract/index'
+import { parseEditIntent, parseEditIntentLLM } from './replan.js'
+import type { Route, RouteStop, POI } from '../../contract/index.js'
 
 function poi(over: Partial<POI>): POI {
   return {

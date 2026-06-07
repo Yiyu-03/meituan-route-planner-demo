@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { deterministicExplanation, streamExplanation } from './explain'
-import type { Constraints, Route } from '../../contract/index'
+import { deterministicExplanation, streamExplanation } from './explain.js'
+import type { Constraints, Route } from '../../contract/index.js'
 
 const c: Constraints = {
   city: '上海', district: '静安区', startTime: 14, durationMin: 300, party: 2,

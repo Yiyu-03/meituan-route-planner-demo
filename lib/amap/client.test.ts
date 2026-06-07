@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { searchPlaceText, walkingLeg } from './client'
+import { searchPlaceText, walkingLeg } from './client.js'
 
 function jsonResponse(body: unknown) {
   return { ok: true, json: async () => body } as Response

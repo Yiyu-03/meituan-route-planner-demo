@@ -1,6 +1,6 @@
-import type { Constraints, Route } from '../../contract/index'
-import type { Persona } from './types'
-import { checkSummary } from './validate'
+import type { Constraints, Route } from '../../contract/index.js'
+import type { Persona } from './types.js'
+import { checkSummary } from './validate.js'
 
 /** Composite rank: avg quality proxy (via checks) + pace fit + compactness + budget. Renumbers ids. */
 export function rankRoutes(routes: Route[], c: Constraints, persona: Persona): Route[] {

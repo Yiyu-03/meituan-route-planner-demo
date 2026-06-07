@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { encodeSSE, parseSSE } from '../framing'
-import type { SSEEvent } from '../events'
+import { encodeSSE, parseSSE } from '../framing.js'
+import type { SSEEvent } from '../events.js'
 
 describe('SSE framing', () => {
   it('round-trips events through the wire format', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { PlanRequestSchema, SSEEventSchema } from '../events'
+import { PlanRequestSchema, SSEEventSchema } from '../events.js'
 
 describe('plan request', () => {
   it('accepts a minimal request', () => {

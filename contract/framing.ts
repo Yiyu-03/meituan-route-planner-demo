@@ -1,4 +1,4 @@
-import { SSEEventSchema, type SSEEvent } from './events'
+import { SSEEventSchema, type SSEEvent } from './events.js'
 
 /** Encode one event as an SSE frame: `event: <type>\ndata: <json>\n\n`. */
 export function encodeSSE(event: SSEEvent): string {

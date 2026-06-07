@@ -1,17 +1,17 @@
 import { randomUUID } from 'node:crypto'
-import { PlanRequestSchema } from '../contract/index'
+import { PlanRequestSchema } from '../contract/index.js'
 import { resolveLocation, getAmapKey } from '../lib/locationResolver.js'
 import { openSSE } from '../lib/sse.js'
 import { createGuest } from '../lib/db/users.js'
 import { resolveIdentity } from '../lib/identity.js'
 import { savePlan } from '../lib/db/plans.js'
 import { hasDatabase } from '../lib/db/client.js'
-import { runPlanLoop } from '../lib/agent/loop.ts'
-import { understand } from '../lib/agent/understandLLM.ts'
-import { retrieve } from '../lib/agent/retrieve.ts'
-import { streamExplanation } from '../lib/agent/explain.ts'
+import { runPlanLoop } from '../lib/agent/loop.js'
+import { understand } from '../lib/agent/understandLLM.js'
+import { retrieve } from '../lib/agent/retrieve.js'
+import { streamExplanation } from '../lib/agent/explain.js'
 import { readCache, writeCache } from '../lib/amap/cache.js'
-import { chatJson } from '../lib/deepseek/client.ts'
+import { chatJson } from '../lib/deepseek/client.js'
 
 function readBody(req) {
   if (!req.body) return {}

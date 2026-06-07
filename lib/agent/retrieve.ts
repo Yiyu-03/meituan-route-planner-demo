@@ -1,8 +1,8 @@
-import { searchPlaceText } from '../amap/client'
+import { searchPlaceText } from '../amap/client.js'
 import { normalizeCacheKey } from '../amap/cache.js'
-import { toEnrichedPOI } from '../amap/poiFeatures'
-import type { EnrichedPOI, RetrieveResult } from './types'
-import type { ResolvedLocation } from './understand'
+import { toEnrichedPOI } from '../amap/poiFeatures.js'
+import type { EnrichedPOI, RetrieveResult } from './types.js'
+import type { ResolvedLocation } from './understand.js'
 
 export interface RetrieveParams {
   keywords: string[]

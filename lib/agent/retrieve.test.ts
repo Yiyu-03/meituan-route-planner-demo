@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { retrieve } from './retrieve'
+import { retrieve } from './retrieve.js'
 
 function jsonResponse(body: unknown) {
   return { ok: true, json: async () => body } as Response

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { personaFor, PERSONAS } from './persona'
+import { personaFor, PERSONAS } from './persona.js'
 
 describe('personaFor', () => {
   it('returns the requested persona', () => {

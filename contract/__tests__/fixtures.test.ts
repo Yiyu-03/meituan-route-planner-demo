@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { parseSSE } from '../framing'
+import { parseSSE } from '../framing.js'
 
 const dir = join(__dirname, '..', 'fixtures')
 

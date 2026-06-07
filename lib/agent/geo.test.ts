@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { haversineM, travelEstimate } from './geo'
+import { haversineM, travelEstimate } from './geo.js'
 
 describe('geo', () => {
   it('haversine returns ~0 for identical points', () => {

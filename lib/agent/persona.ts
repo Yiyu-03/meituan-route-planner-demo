@@ -1,4 +1,4 @@
-import type { Persona } from './types'
+import type { Persona } from './types.js'
 
 export const PERSONAS: Record<Persona['id'], Persona> = {
   couple: {

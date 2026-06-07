@@ -1,5 +1,5 @@
-import type { Category } from '../../contract/index'
-import type { EnrichedPOI, SceneTag } from '../agent/types'
+import type { Category } from '../../contract/index.js'
+import type { EnrichedPOI, SceneTag } from '../agent/types.js'
 
 interface AmapV5Poi {
   id?: string

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { validateRoute } from './validate'
-import { personaFor } from './persona'
-import type { Constraints, Route } from '../../contract/index'
+import { validateRoute } from './validate.js'
+import { personaFor } from './persona.js'
+import type { Constraints, Route } from '../../contract/index.js'
 
 const persona = personaFor('couple')
 const c: Constraints = {

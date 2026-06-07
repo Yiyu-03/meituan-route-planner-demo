@@ -1,12 +1,12 @@
-import type { Constraints, DataSources, PlanRequest, POI, Route, ScoredPOI, SSEEvent } from '../../contract/index'
-import type { EnrichedPOI, RetrieveResult, UnderstandResult } from './types'
-import { personaFor } from './persona'
-import { scorePOIs } from './score'
-import { buildRouteCandidates, materializeRoute } from './build'
-import { validateRoute } from './validate'
-import { repairIfNeeded } from './repair'
-import { rankRoutes } from './rank'
-import { parseEditIntent, parseEditIntentLLM, applyEdit, constraintsFromPrev, keywordsForEdit, prevCenter } from './replan'
+import type { Constraints, DataSources, PlanRequest, POI, Route, ScoredPOI, SSEEvent } from '../../contract/index.js'
+import type { EnrichedPOI, RetrieveResult, UnderstandResult } from './types.js'
+import { personaFor } from './persona.js'
+import { scorePOIs } from './score.js'
+import { buildRouteCandidates, materializeRoute } from './build.js'
+import { validateRoute } from './validate.js'
+import { repairIfNeeded } from './repair.js'
+import { rankRoutes } from './rank.js'
+import { parseEditIntent, parseEditIntentLLM, applyEdit, constraintsFromPrev, keywordsForEdit, prevCenter } from './replan.js'
 
 export interface LoopDeps {
   resolveLocation: (raw: string) => Promise<{ status: string; city: string | null; district?: string | null; center?: { lat: number; lng: number }; message?: string }>

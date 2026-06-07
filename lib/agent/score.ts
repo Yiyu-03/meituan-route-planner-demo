@@ -1,6 +1,6 @@
-import type { Constraints, ScoredPOI, FieldSource } from '../../contract/index'
-import type { EnrichedPOI, Persona, SceneTag } from './types'
-import { haversineM } from './geo'
+import type { Constraints, ScoredPOI, FieldSource } from '../../contract/index.js'
+import type { EnrichedPOI, Persona, SceneTag } from './types.js'
+import { haversineM } from './geo.js'
 
 /** Weights after deleting popularity(10)+ugcBonus(3): +7→quality, +6→prefMatch. Sums to 100. */
 export const SCORE_WEIGHTS = {

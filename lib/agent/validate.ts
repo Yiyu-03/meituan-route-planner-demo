@@ -1,5 +1,5 @@
-import type { Check, Constraints, Route } from '../../contract/index'
-import type { Persona } from './types'
+import type { Check, Constraints, Route } from '../../contract/index.js'
+import type { Persona } from './types.js'
 
 function fmtH(h: number): string {
   const hh = Math.floor(h) % 24

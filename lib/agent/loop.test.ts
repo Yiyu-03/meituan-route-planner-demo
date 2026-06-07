@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { runPlanLoop } from './loop'
-import { SSEEventSchema } from '../../contract/index'
-import type { EnrichedPOI } from './types'
+import { runPlanLoop } from './loop.js'
+import { SSEEventSchema } from '../../contract/index.js'
+import type { EnrichedPOI } from './types.js'
 
 function poi(over: Partial<EnrichedPOI>): EnrichedPOI {
   return {

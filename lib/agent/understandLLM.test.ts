@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { understand } from './understandLLM'
-import { personaFor } from './persona'
+import { understand } from './understandLLM.js'
+import { personaFor } from './persona.js'
 
 const loc = { city: '上海', district: '静安区', center: { lat: 31.22, lng: 121.44 } }
 const prefs = { personaPick: 'couple' as const, prefs: ['quiet'], budgetPref: null }

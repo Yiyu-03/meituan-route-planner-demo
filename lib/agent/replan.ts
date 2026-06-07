@@ -1,6 +1,6 @@
-import type { Category, Constraints, Route, ScoredPOI } from '../../contract/index'
-import type { EnrichedPOI, Persona } from './types'
-import { distBetween } from './geo'
+import type { Category, Constraints, Route, ScoredPOI } from '../../contract/index.js'
+import type { EnrichedPOI, Persona } from './types.js'
+import { distBetween } from './geo.js'
 
 export type EditOpKind =
   | 'cheaper' | 'closer' | 'higher_rated' | 'swap' | 'remove' | 'add' | 'rebudget'

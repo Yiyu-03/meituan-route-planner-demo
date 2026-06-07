@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import {
   ConstraintsSchema, ScoredPOISchema, RouteSchema, DataSourcesSchema,
-} from './types'
+} from './types.js'
 
 export const PlanRequestSchema = z.object({
   request: z.string().min(1),

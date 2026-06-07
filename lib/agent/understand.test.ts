@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { parseConstraintsFallback, fallbackKeywords } from './understand'
-import { personaFor } from './persona'
+import { parseConstraintsFallback, fallbackKeywords } from './understand.js'
+import { personaFor } from './persona.js'
 
 const loc = { city: '上海', district: '静安寺', center: { lat: 31.22, lng: 121.44 } }
 

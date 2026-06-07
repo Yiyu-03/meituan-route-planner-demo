@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ConstraintsSchema, ScoredPOISchema, RouteSchema } from '../types'
+import { ConstraintsSchema, ScoredPOISchema, RouteSchema } from '../types.js'
 
 describe('data schemas', () => {
   it('accepts a valid Constraints object', () => {

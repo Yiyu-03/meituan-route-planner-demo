@@ -1,5 +1,5 @@
-import type { Constraints, Route } from '../../contract/index'
-import { chatStream, type ChatMessage } from '../deepseek/client'
+import type { Constraints, Route } from '../../contract/index.js'
+import { chatStream, type ChatMessage } from '../deepseek/client.js'
 
 const CATEGORY_LABEL: Record<string, string> = {
   dining: '正餐', cafe: '咖啡', culture: '文化点', entertainment: '娱乐', shopping: '逛街', nightscape: '夜景',

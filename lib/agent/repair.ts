@@ -1,7 +1,7 @@
-import type { Constraints, Route, ScoredPOI } from '../../contract/index'
-import type { Persona } from './types'
-import { materializeRoute } from './build'
-import { validateRoute } from './validate'
+import type { Constraints, Route, ScoredPOI } from '../../contract/index.js'
+import type { Persona } from './types.js'
+import { materializeRoute } from './build.js'
+import { validateRoute } from './validate.js'
 
 export interface RepairLog {
   round: number

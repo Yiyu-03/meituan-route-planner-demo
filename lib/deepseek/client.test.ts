@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { chatJson, chatStream } from './client'
+import { chatJson, chatStream } from './client.js'
 
 function sseStream(chunks: string[]) {
   const enc = new TextEncoder()

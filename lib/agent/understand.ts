@@ -1,5 +1,5 @@
-import type { Category, Constraints } from '../../contract/index'
-import type { Persona, SceneTag } from './types'
+import type { Category, Constraints } from '../../contract/index.js'
+import type { Persona, SceneTag } from './types.js'
 
 export interface ResolvedLocation {
   city: string

@@ -1,7 +1,7 @@
-import type { Category, Constraints } from '../../contract/index'
-import type { Persona, UnderstandResult } from './types'
-import { parseConstraintsFallback, fallbackKeywords, type ResolvedLocation } from './understand'
-import { chatJson } from '../deepseek/client'
+import type { Category, Constraints } from '../../contract/index.js'
+import type { Persona, UnderstandResult } from './types.js'
+import { parseConstraintsFallback, fallbackKeywords, type ResolvedLocation } from './understand.js'
+import { chatJson } from '../deepseek/client.js'
 
 export interface UnderstandDeps {
   apiKey?: string

@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { repairIfNeeded } from './repair'
-import { materializeRoute } from './build'
-import { validateRoute } from './validate'
-import { scorePOIs } from './score'
-import { personaFor } from './persona'
-import type { EnrichedPOI } from './types'
-import type { Constraints } from '../../contract/index'
+import { repairIfNeeded } from './repair.js'
+import { materializeRoute } from './build.js'
+import { validateRoute } from './validate.js'
+import { scorePOIs } from './score.js'
+import { personaFor } from './persona.js'
+import type { EnrichedPOI } from './types.js'
+import type { Constraints } from '../../contract/index.js'
 
 function poi(over: Partial<EnrichedPOI>): EnrichedPOI {
   return {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { toEnrichedPOI, parseOpenHours, deriveSceneTags } from './poiFeatures'
+import { toEnrichedPOI, parseOpenHours, deriveSceneTags } from './poiFeatures.js'
 
 const v5Poi = {
   id: 'B0LBRRKLFC',

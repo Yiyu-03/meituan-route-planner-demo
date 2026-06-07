@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { PlanError, isPlanError } from './errors'
+import { PlanError, isPlanError } from './errors.js'
 
 describe('PlanError', () => {
   it('carries a contract error code + recoverable flag', () => {
