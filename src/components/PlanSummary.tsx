@@ -25,7 +25,7 @@ export function PlanSummary({ route, constraints }: { route: Route; constraints:
           </span>
           <span className="inline-flex items-center gap-1">
             <Walk size={14} strokeWidth={1.7} aria-hidden />
-            步行 <span className="latin">{route.totalWalkMin}min</span>
+            移动 <span className="latin">{route.totalWalkMin + route.totalTransitMin}min</span>
           </span>
         </div>
       </div>

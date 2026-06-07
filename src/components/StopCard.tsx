@@ -1,4 +1,5 @@
 import type { RouteStop, FieldSource } from '../../contract'
+import { TramFront } from 'lucide-react'
 import { CategoryIcon, ActionIcons, MetaIcons } from '../design/icons'
 
 const SOURCE_LABEL: Record<FieldSource, string> = {
@@ -62,8 +63,11 @@ export function StopCard({ index, stop, explanation, active = false, onSelect }:
             {poi.perCapita != null && <span className="latin">¥{poi.perCapita}</span>}
             {stop.legFromPrev && (
               <span className="inline-flex items-center gap-1">
-                <Walk size={13} strokeWidth={1.7} aria-hidden />
+                {stop.legFromPrev.mode === 'transit'
+                  ? <TramFront size={13} strokeWidth={1.7} aria-hidden />
+                  : <Walk size={13} strokeWidth={1.7} aria-hidden />}
                 <span className="latin">{stop.legFromPrev.minutes}min</span>
+                <span>{stop.legFromPrev.mode === 'transit' ? '车程' : '步行'}</span>
               </span>
             )}
           </div>
