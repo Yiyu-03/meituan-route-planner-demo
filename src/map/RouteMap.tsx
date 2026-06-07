@@ -37,29 +37,30 @@ export function RouteMap({
     const map = new ns.Map(elRef.current, { zoom: 14, center, viewMode: '2D' })
     mapRef.current = map
 
-    const overlays: unknown[] = []
+    // Candidate dots are context only — NOT part of the fit (they span the whole city).
     for (const c of candidates) {
-      const cm = new ns.CircleMarker({
+      map.add(new ns.CircleMarker({
         center: [c.poi.lng, c.poi.lat], radius: 5,
         fillColor: '#bd7c22', fillOpacity: 0.5, strokeWeight: 0,
-      })
-      map.add(cm); overlays.push(cm)
+      }))
     }
+    // Fit only to the route's own markers + polyline so the initial view frames the plan.
+    const fitOverlays: unknown[] = []
     stops.forEach((stop, i) => {
       const m = new ns.Marker({
         position: [stop.poi.lng, stop.poi.lat],
         content: `<span style="display:inline-flex;width:22px;height:22px;border-radius:50%;background:${MARKER_COLORS[i % 3]};color:#fff;align-items:center;justify-content:center;font-size:12px;">${i + 1}</span>`,
         offset: [-11, -11],
       })
-      map.add(m); overlays.push(m)
+      map.add(m); fitOverlays.push(m)
     })
     const path = stops.map((s) => [s.poi.lng, s.poi.lat]) as [number, number][]
     if (path.length > 1) {
       const pl = new ns.Polyline({ path, strokeColor: '#bb3a2c', strokeWeight: 4, strokeOpacity: 0.85 })
-      map.add(pl); overlays.push(pl)
+      map.add(pl); fitOverlays.push(pl)
     }
     // Fit to the route once tiles are ready (setFitView before 'complete' can be ignored).
-    const fit = () => { if (overlays.length) map.setFitView(overlays, true, [48, 48, 48, 48]) }
+    const fit = () => { if (fitOverlays.length) map.setFitView(fitOverlays, true, [48, 48, 48, 48]) }
     map.on('complete', fit)
     fit()
 

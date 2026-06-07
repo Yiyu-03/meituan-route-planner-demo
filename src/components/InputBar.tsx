@@ -23,7 +23,7 @@ const PREF_CHIPS: { key: string; label: string }[] = [
   { key: 'local', label: '本地烟火' },
 ]
 
-const EXAMPLE = '周末下午在静安找个安静咖啡，再吃顿本帮菜，人均300内'
+const EXAMPLE = '周末下午在上海静安找个安静咖啡，再吃顿本帮菜，人均300内'
 
 export function InputBar({ onSubmit, busy }: { onSubmit: (v: InputSubmit) => void; busy: boolean }) {
   const [text, setText] = useState('')
@@ -46,7 +46,7 @@ export function InputBar({ onSubmit, busy }: { onSubmit: (v: InputSubmit) => voi
         value={text}
         onChange={(e) => setText(e.target.value)}
         rows={3}
-        placeholder="周末下午在静安找个安静咖啡，再吃顿本帮菜，人均300内"
+        placeholder="周末下午在上海静安找个安静咖啡，再吃顿本帮菜，人均300内"
         className="w-full resize-none rounded-md border border-[var(--hairline)] bg-[var(--paper-card)] p-3 text-[15px] leading-7 outline-none"
       />
       <div className="flex flex-wrap gap-1.5">
