@@ -75,7 +75,7 @@ export function LoginView({ onAuthed }: { onAuthed: (identity: Identity) => void
             <RoamSeal size={34} strokeWidth={1.5} />
           </span>
           <h2 className="hand lv-rise mt-3 text-[24px] tracking-[0.04em] text-[var(--ink)]" style={{ animationDelay: '.1s' }}>漫游·手帐</h2>
-          <p className="latin lv-rise text-[12px] uppercase tracking-[0.34em] text-[var(--ink-soft)]" style={{ animationDelay: '.16s' }}>Stroll · Shanghai</p>
+          <p className="latin lv-rise text-[12px] uppercase tracking-[0.34em] text-[var(--ink-soft)]" style={{ animationDelay: '.16s' }}>Stroll · Journal</p>
         </div>
 
         {/* ornamental divider */}
@@ -140,7 +140,7 @@ export function LoginView({ onAuthed }: { onAuthed: (identity: Identity) => void
 
         {/* editorial edition line */}
         <p className="latin mt-7 text-center text-[10.5px] tracking-[0.14em] text-[var(--ink-soft)]/80">
-          No. 0042 · Est. 2026 · 上海
+          No. 0042 · Est. 2026 · 城市漫游
         </p>
       </div>
     </div>
