@@ -117,6 +117,50 @@ export function parseEditIntent(request: string, prev: Route): EditOp {
 }
 
 // ------------------------------------------------------------
+// Optional LLM enhancement — deterministic rules stay the source of truth;
+// the LLM only fills gaps (op/targetIndex/targetCategory/newBudget) the rules
+// left unresolved. Unavailable/invalid LLM ⇒ pure rule result. Same injectable
+// deps pattern as understandLLM.
+// ------------------------------------------------------------
+
+const VALID_OPS: EditOpKind[] = ['cheaper', 'closer', 'higher_rated', 'swap', 'remove', 'add', 'rebudget']
+const VALID_CATS: Category[] = ['dining', 'cafe', 'culture', 'entertainment', 'shopping', 'nightscape']
+
+export interface EditIntentDeps {
+  chatJson?: (messages: any[]) => Promise<any | null>
+}
+
+function editPrompt(request: string, prev: Route) {
+  const stops = prev.stops.map((s, i) => ({ index: i, category: s.poi.category, name: s.poi.name }))
+  return [
+    { role: 'system', content: '你把中文「改方案」指令解析成结构化 JSON。只输出 JSON。字段：op(取自 cheaper|closer|higher_rated|swap|remove|add|rebudget) targetIndex(0 起的站序号|null) targetCategory(dining|cafe|culture|entertainment|shopping|nightscape|null) newBudget(number|null，仅 rebudget)。序数“第二/第3/最后一家”对应 targetIndex。' },
+    { role: 'user', content: JSON.stringify({ request, stops }) },
+  ]
+}
+
+/** Rules-first edit intent with an optional LLM gap-filler. Always returns a valid op. */
+export async function parseEditIntentLLM(
+  request: string, prev: Route, deps: EditIntentDeps = {},
+): Promise<EditOp> {
+  const base = parseEditIntent(request, prev)
+  if (!deps.chatJson) return base
+
+  let llm: any = null
+  try { llm = await deps.chatJson(editPrompt(request, prev)) } catch { llm = null }
+  if (!llm || typeof llm !== 'object') return base
+
+  const op: EditOpKind = VALID_OPS.includes(llm.op) ? llm.op : base.op
+  const targetIndex = Number.isInteger(llm.targetIndex) && llm.targetIndex >= 0 && llm.targetIndex < prev.stops.length
+    ? llm.targetIndex
+    : base.targetIndex
+  const targetCategory = VALID_CATS.includes(llm.targetCategory) ? llm.targetCategory : base.targetCategory
+  const newBudget = op === 'rebudget'
+    ? (Number.isFinite(llm.newBudget) ? Number(llm.newBudget) : base.newBudget)
+    : undefined
+  return { op, targetIndex, targetCategory, newBudget, raw: request.trim() }
+}
+
+// ------------------------------------------------------------
 // Constraints reconstruction + minimal-edit application.
 // ------------------------------------------------------------
 

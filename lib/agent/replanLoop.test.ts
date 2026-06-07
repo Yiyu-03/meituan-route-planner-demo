@@ -145,6 +145,22 @@ describe('runPlanLoop · replan branch', () => {
     expect(dining.poi.rating!).toBeGreaterThan(4.3)
   })
 
+  it('uses injected editChatJson to resolve an ambiguous edit', async () => {
+    // ambiguous instruction; LLM resolves it to higher_rated on dining
+    const deps = {
+      ...baseDeps,
+      editChatJson: async () => ({ op: 'higher_rated', targetIndex: 1, targetCategory: 'dining', newBudget: null }),
+      retrieve: async () => ({
+        pois: [poi({ id: 'dine9', category: 'dining', name: '顶级餐厅', perCapita: 215, rating: 4.95, lat: 31.223, lng: 121.443 })],
+        center: { lat: 31.22, lng: 121.44 }, cacheHits: 0, cacheMisses: 1, amapStatus: 'ok' as const,
+      }),
+    }
+    const events = await collect(runPlanLoop(req('调一下吧', previousPlan), { deviceToken: 'd', userId: null }, deps as any))
+    const route = lastRoute(events)
+    const dining = route.stops.find((s) => s.poi.category === 'dining')!
+    expect(dining.poi.id).toBe('dine9')
+  })
+
   it('no replacement found: keeps original node honestly (no fabrication)', async () => {
     // retrieve returns nothing usable → original dining stays
     const events = await collect(runPlanLoop(req('换一家评分更高的餐厅', previousPlan), { deviceToken: 'd', userId: null }, baseDeps as any))

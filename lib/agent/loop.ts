@@ -6,7 +6,7 @@ import { buildRouteCandidates, materializeRoute } from './build'
 import { validateRoute } from './validate'
 import { repairIfNeeded } from './repair'
 import { rankRoutes } from './rank'
-import { parseEditIntent, applyEdit, constraintsFromPrev, keywordsForEdit, prevCenter } from './replan'
+import { parseEditIntent, parseEditIntentLLM, applyEdit, constraintsFromPrev, keywordsForEdit, prevCenter } from './replan'
 
 export interface LoopDeps {
   resolveLocation: (raw: string) => Promise<{ status: string; city: string | null; district?: string | null; center?: { lat: number; lng: number }; message?: string }>
@@ -15,6 +15,8 @@ export interface LoopDeps {
   streamExplanation: (route: Route, c: Constraints) => AsyncGenerator<string>
   savePlan: (record: any) => Promise<{ id: string }>
   planId: () => string
+  /** Optional LLM gap-filler for replan edit-intent parsing (deterministic rules stay primary). */
+  editChatJson?: (messages: any[]) => Promise<any | null>
 }
 
 export interface LoopIdentity { deviceToken: string | null; userId: number | null }
@@ -149,7 +151,9 @@ export async function* runPlanLoop(
 async function* runReplanLoop(
   req: PlanRequest, previousPlan: Route, identity: LoopIdentity, deps: LoopDeps, persona: ReturnType<typeof personaFor>,
 ): AsyncGenerator<SSEEvent> {
-  const op = parseEditIntent(req.request, previousPlan)
+  const op = deps.editChatJson
+    ? await parseEditIntentLLM(req.request, previousPlan, { chatJson: deps.editChatJson })
+    : parseEditIntent(req.request, previousPlan)
   const constraints = constraintsFromPrev(previousPlan, persona, op)
 
   // 1) understand the edit (deterministic op; LLM-free stage for parity)

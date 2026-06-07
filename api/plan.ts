@@ -11,6 +11,7 @@ import { understand } from '../lib/agent/understandLLM.ts'
 import { retrieve } from '../lib/agent/retrieve.ts'
 import { streamExplanation } from '../lib/agent/explain.ts'
 import { readCache, writeCache } from '../lib/amap/cache.js'
+import { chatJson } from '../lib/deepseek/client.ts'
 
 function readBody(req) {
   if (!req.body) return {}
@@ -57,6 +58,7 @@ export default async function handler(req, res) {
     streamExplanation: (route, c) => streamExplanation(route, c, { apiKey: process.env.DEEPSEEK_API_KEY ?? '' }),
     savePlan: (record) => (hasDatabase() ? savePlan(record) : Promise.resolve({ id: record.id })),
     planId: () => `plan-${randomUUID()}`,
+    editChatJson: (messages) => chatJson({ apiKey: process.env.DEEPSEEK_API_KEY ?? '', messages }),
   }
 
   try {

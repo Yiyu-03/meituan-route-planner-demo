@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseEditIntent } from './replan'
+import { parseEditIntent, parseEditIntentLLM } from './replan'
 import type { Route, RouteStop, POI } from '../../contract/index'
 
 function poi(over: Partial<POI>): POI {
@@ -99,5 +99,43 @@ describe('parseEditIntent', () => {
   it('unrecognized → swap fallback with no target (best-effort)', () => {
     const op = parseEditIntent('随便改改', prev)
     expect(op.op).toBe('swap')
+  })
+})
+
+describe('parseEditIntentLLM', () => {
+  it('returns the rule result when no LLM dep is injected', async () => {
+    const op = await parseEditIntentLLM('第二家换便宜点的', prev)
+    expect(op.op).toBe('cheaper')
+    expect(op.targetIndex).toBe(1)
+  })
+
+  it('falls back to rules when the LLM returns null', async () => {
+    const op = await parseEditIntentLLM('第二家换便宜点的', prev, { chatJson: async () => null })
+    expect(op.op).toBe('cheaper')
+    expect(op.targetIndex).toBe(1)
+  })
+
+  it('falls back to rules when the LLM throws', async () => {
+    const op = await parseEditIntentLLM('第二家换便宜点的', prev, { chatJson: async () => { throw new Error('boom') } })
+    expect(op.op).toBe('cheaper')
+    expect(op.targetIndex).toBe(1)
+  })
+
+  it('lets a valid LLM result fill a gap the rules left unresolved', async () => {
+    // ambiguous instruction → rules give swap w/ no target; LLM resolves index 2
+    const op = await parseEditIntentLLM('随便改改', prev, {
+      chatJson: async () => ({ op: 'higher_rated', targetIndex: 2, targetCategory: 'culture', newBudget: null }),
+    })
+    expect(op.op).toBe('higher_rated')
+    expect(op.targetIndex).toBe(2)
+    expect(op.targetCategory).toBe('culture')
+  })
+
+  it('ignores invalid LLM fields and keeps the rule values', async () => {
+    const op = await parseEditIntentLLM('第二家换便宜点的', prev, {
+      chatJson: async () => ({ op: 'nonsense', targetIndex: 99, targetCategory: 'bogus' }),
+    })
+    expect(op.op).toBe('cheaper')
+    expect(op.targetIndex).toBe(1)
   })
 })
