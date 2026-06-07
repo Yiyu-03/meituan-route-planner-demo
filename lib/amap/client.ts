@@ -52,6 +52,35 @@ export async function searchPlaceText(p: PlaceTextParams, deps: AmapDeps = {}): 
   }
 }
 
+export interface PlaceAroundParams {
+  keyword: string
+  center: { lat: number; lng: number }
+  radius: number
+  key: string
+  pageSize?: number
+}
+
+/** v5 place/around: POIs within `radius` metres of `center`. Caller caches/quota-guards. */
+export async function searchPlaceAround(p: PlaceAroundParams, deps: AmapDeps = {}): Promise<PlaceTextResult> {
+  const params = new URLSearchParams({
+    key: p.key,
+    keywords: p.keyword,
+    location: `${p.center.lng},${p.center.lat}`,
+    radius: String(Math.round(p.radius)),
+    show_fields: 'business,photos',
+    page_size: String(p.pageSize ?? 12),
+    page_num: '1',
+  })
+  try {
+    const data = await fetchJson(`${AMAP_V5}/place/around?${params.toString()}`, deps)
+    if (data?.status !== '1') return { status: 'error', pois: [], info: data?.info }
+    const pois = Array.isArray(data.pois) ? data.pois : []
+    return { status: pois.length ? 'ok' : 'empty', pois }
+  } catch (err) {
+    return { status: 'error', pois: [], info: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 export interface WalkingParams {
   from: { lat: number; lng: number }
   to: { lat: number; lng: number }
