@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { planReducer, initialPlanState } from './usePlanStream'
-import type { SSEEvent } from '../../contract'
+import type { SSEEvent, Route, Constraints, DataSources } from '../../contract'
 
 const stage: SSEEvent = { type: 'stage', key: 'retrieve', label: '召回', status: 'ok', ms: 120 }
 const route: SSEEvent = {
@@ -33,18 +33,18 @@ describe('planReducer', () => {
     expect(s.error?.code).toBe('insufficient-data')
   })
   it('loads an existing plan record as current state', () => {
-    const loadedRoute = {
+    const loadedRoute: Route = {
       id: 'hist-route', stops: [], totalCost: 200, totalWalkMin: 12, totalTransitMin: 0,
-      endTime: 18, coverage: ['cafe'] as const, checks: [],
+      endTime: 18, coverage: ['cafe'], checks: [],
       explanation: '历史方案说明', risks: [],
     }
-    const constraints = {
+    const constraints: Constraints = {
       city: '上海', district: '静安', startTime: 14, durationMin: 240, party: 2,
       budgetPerCapita: 300, diningBudgetPerCapita: null, prefs: [], avoid: [],
-      mustCategories: [] as const, pace: 'normal' as const, personaId: 'couple' as const,
+      mustCategories: [], pace: 'normal', personaId: 'couple',
       raw: '静安咖啡',
     }
-    const dataSources = {
+    const dataSources: DataSources = {
       amapPoi: { configured: true, used: true, status: 'ok' },
       amapRoute: { configured: true, used: true, status: 'ok' },
       deepseek: { configured: true, used: true, status: 'ok' },
