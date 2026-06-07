@@ -2,7 +2,7 @@ import type { Constraints, DataSources, PlanRequest, POI, Route, ScoredPOI, SSEE
 import type { EnrichedPOI, RetrieveResult, UnderstandResult } from './types.js'
 import { personaFor } from './persona.js'
 import { scorePOIs } from './score.js'
-import { buildRouteCandidates, materializeRoute } from './build.js'
+import { buildRouteCandidates, materializeRoute, densestClusterCenter } from './build.js'
 import { validateRoute } from './validate.js'
 import { repairIfNeeded } from './repair.js'
 import { rankRoutes } from './rank.js'
@@ -12,6 +12,8 @@ export interface LoopDeps {
   resolveLocation: (raw: string) => Promise<{ status: string; city: string | null; district?: string | null; center?: { lat: number; lng: number }; message?: string }>
   understand: (raw: string, loc: any, persona: any, preferences: any) => Promise<UnderstandResult>
   retrieve: (keywords: string[], loc: any) => Promise<RetrieveResult>
+  /** Resolve a user anchor (区域名/具体地点) to a center; null when unresolvable. */
+  resolveAnchor?: (anchorText: string, city: string) => Promise<{ lat: number; lng: number } | null>
   streamExplanation: (route: Route, c: Constraints) => AsyncGenerator<string>
   savePlan: (record: any) => Promise<{ id: string }>
   planId: () => string
@@ -81,7 +83,10 @@ export async function* planFromCandidates(
   yield { type: 'candidates', candidates: scored.map(stripScored) }
 
   yield stage('build', '组合路线', 'running')
-  const { routes: built } = buildRouteCandidates(scored, constraints, persona)
+  // Anchor for geo-clustering: explicit override (resolved anchor/district center) when present,
+  // else the densest candidate cluster — so stops stay together instead of scattered across the city.
+  const anchorCenter = opts.center ?? densestClusterCenter(candidates) ?? center
+  const { routes: built } = buildRouteCandidates(scored, constraints, persona, { anchorCenter })
   if (built.length === 0) {
     yield stage('build', '组合路线', 'fail')
     yield { type: 'error', code: 'insufficient-data', message: '真实候选无法组成满足约束的路线。', recoverable: true }
@@ -157,9 +162,19 @@ export async function* runPlanLoop(
   yield stage('understand', '读懂需求', 'ok', { summary: understood.llmUsed ? 'LLM 解析' : '规则解析' })
   yield { type: 'constraints', constraints }
 
-  // 3) retrieve
+  // 2b) anchor center: user anchor (resolved) → resolved district center → null (densest-cluster later).
+  let anchorCenter: { lat: number; lng: number } | null = null
+  if (understood.anchor && deps.resolveAnchor) {
+    anchorCenter = await deps.resolveAnchor(understood.anchor, loc.city).catch(() => null)
+  }
+  if (!anchorCenter && loc.center) anchorCenter = loc.center
+
+  // 3) retrieve — around the anchor when we have one, else city-wide
   yield stage('retrieve', '召回真实地点', 'running')
-  const retrieved = await deps.retrieve(understood.keywords, { ...loc, district: loc.district ?? constraints.district })
+  const retrieved = await deps.retrieve(understood.keywords, {
+    ...loc, district: loc.district ?? constraints.district,
+    anchorCenter: anchorCenter ?? undefined,
+  })
   if (retrieved.pois.length < 2) {
     yield stage('retrieve', '召回真实地点', 'fail')
     if (retrieved.amapStatus === 'error' || retrieved.amapStatus === 'not_configured') {
@@ -176,7 +191,7 @@ export async function* runPlanLoop(
     amapStatus: retrieved.amapStatus,
     cacheHits: retrieved.cacheHits,
     cacheMisses: retrieved.cacheMisses,
-    center: loc.center ?? undefined,
+    center: anchorCenter ?? loc.center ?? undefined,
   })
 }
 

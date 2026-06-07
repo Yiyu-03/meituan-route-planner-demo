@@ -1,10 +1,51 @@
 import type { Category, Constraints, Route, RouteStop, ScoredPOI } from '../../contract/index.js'
 import type { Persona } from './types.js'
-import { distBetween, travelEstimate } from './geo.js'
+import { distBetween, haversineM, travelEstimate } from './geo.js'
 
 const BEAM = 6
 const TOPK_PER_SLOT = 7
 const OUTPUT = 6
+
+// Anchor clustering: filter candidates to within R metres of the anchor before composing.
+// Adaptive — widen only when the tighter radius can't supply enough distinct categories.
+const ANCHOR_RADII_M = [3000, 5000, 8000]
+const MIN_CATS_IN_RADIUS = 2
+const MIN_CANDIDATES_IN_RADIUS = 4
+
+export interface BuildOpts {
+  /** Geographic anchor; candidates beyond ANCHOR_RADII get filtered out (adaptive widen). */
+  anchorCenter?: { lat: number; lng: number }
+}
+
+/** Densest-cluster fallback: the candidate whose R-neighbourhood is most crowded → its coords. */
+export function densestClusterCenter(
+  pois: Array<{ lat: number; lng: number }>, radiusM = 3000,
+): { lat: number; lng: number } | null {
+  if (!pois.length) return null
+  let best = pois[0]
+  let bestCount = -1
+  for (const p of pois) {
+    let count = 0
+    for (const q of pois) {
+      if (haversineM(p.lat, p.lng, q.lat, q.lng) <= radiusM) count += 1
+    }
+    if (count > bestCount) { bestCount = count; best = p }
+  }
+  return { lat: best.lat, lng: best.lng }
+}
+
+/** Adaptive radius filter: smallest R that yields enough distinct categories/candidates. */
+function clusterToAnchor(scored: ScoredPOI[], center: { lat: number; lng: number }): ScoredPOI[] {
+  let chosen: ScoredPOI[] = scored
+  for (const r of ANCHOR_RADII_M) {
+    const inside = scored.filter((s) => haversineM(center.lat, center.lng, s.poi.lat, s.poi.lng) <= r)
+    const cats = new Set(inside.map((s) => s.poi.category)).size
+    chosen = inside
+    if (cats >= MIN_CATS_IN_RADIUS && inside.length >= MIN_CANDIDATES_IN_RADIUS) return inside
+  }
+  // Even the widest radius is sparse → use whatever the widest captured, else fall back to all.
+  return chosen.length ? chosen : scored
+}
 
 const OPEN_FALLBACK = 0      // null openHour ⇒ treat as open from 00:00
 const CLOSE_FALLBACK = 24    // null closeHour ⇒ treat as open until 24:00
@@ -72,10 +113,12 @@ function effectiveLatestEnd(c: Constraints, persona: Persona): number {
 }
 
 export function buildRouteCandidates(
-  scored: ScoredPOI[], c: Constraints, persona: Persona,
+  scored: ScoredPOI[], c: Constraints, persona: Persona, opts: BuildOpts = {},
 ): { slots: Category[]; routes: Route[] } {
+  // Geo-cluster around the anchor (if any) so stops stay walkable, not scattered across the city.
+  const clustered = opts.anchorCenter ? clusterToAnchor(scored, opts.anchorCenter) : scored
   const slots = planSlots(c, persona)
-  const slotPools = topKForSlots(slots, scored)
+  const slotPools = topKForSlots(slots, clustered)
   const latestEnd = effectiveLatestEnd(c, persona)
   let beams: PartialRoute[] = [{ picks: [], usedIds: new Set(), scoreSum: 0, penalty: 0 }]
 
@@ -99,7 +142,8 @@ export function buildRouteCandidates(
         const prev = beam.picks[beam.picks.length - 1]
         if (prev) {
           const d = distBetween(prev.poi, cand.poi)
-          legPenalty = travelEstimate(d, persona.walkTolerance).minutes * 0.25
+          // Stronger proximity bias: penalise long legs harder so tightly-clustered routes win.
+          legPenalty = travelEstimate(d, persona.walkTolerance).minutes * 0.6
         }
         const waitPenalty = Math.max(0, openOf(cand.poi) - eta) * 6
         next.push({
@@ -127,7 +171,7 @@ export function buildRouteCandidates(
 
   // Don't demand 3 stops when the user only asked for 2 things (e.g. 羊肉串+博物馆):
   // cap the minimum by how many distinct categories actually have real candidates.
-  const availableCats = new Set(scored.map((s) => s.poi.category)).size
+  const availableCats = new Set(clustered.map((s) => s.poi.category)).size
   const target = c.pace === 'relaxed' && slots.length <= 2 ? 2 : 3
   const minStops = Math.max(2, Math.min(target, availableCats))
   const routes = beams

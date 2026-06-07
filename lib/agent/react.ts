@@ -11,14 +11,18 @@ export interface ReactState {
   candidates: EnrichedPOI[]
   constraints: Constraints
   city: string
+  /** Geo anchor center for clustering (resolved user anchor or district center); null = densest-cluster. */
+  anchorCenter?: { lat: number; lng: number } | null
 }
 
 export interface ReactDeps {
   resolveLocation: (raw: string) => Promise<{ status: string; city: string | null; district?: string | null; center?: { lat: number; lng: number }; message?: string }>
   understand: (raw: string, loc: any, persona: any, preferences: any) => Promise<UnderstandResult>
   retrieve: (keywords: string[], loc: any) => Promise<RetrieveResult>
-  /** Single-keyword real POI search (amap place/text via cache). Returns [] on miss/error. */
-  searchPOI: (keyword: string, district?: string) => Promise<EnrichedPOI[]>
+  /** Single-keyword real POI search. With anchorCenter → place/around; else city-wide place/text. */
+  searchPOI: (keyword: string, district?: string, anchorCenter?: { lat: number; lng: number }) => Promise<EnrichedPOI[]>
+  /** Resolve a user anchor (区域名/具体地点) to a center; null when unresolvable. */
+  resolveAnchor?: (anchorText: string, city: string) => Promise<{ lat: number; lng: number } | null>
   streamExplanation: (route: any, c: Constraints) => AsyncGenerator<string>
   savePlan: (record: any) => Promise<{ id: string }>
   saveConversation: (id: string, owner: string | null, state: ReactState) => Promise<{ id: string }>
@@ -84,12 +88,14 @@ export async function* runReactLoop(
   let messages: ReactState['messages']
   let constraints: Constraints
   let city: string
+  let anchorCenter: { lat: number; lng: number } | null = null
   const candById = new Map<string, EnrichedPOI>()
 
   if (deps.priorState) {
     messages = [...deps.priorState.messages]
     constraints = deps.priorState.constraints
     city = deps.priorState.city
+    anchorCenter = deps.priorState.anchorCenter ?? null
     dedupeInto(candById, deps.priorState.candidates ?? [])
     if (req.answer) messages.push({ role: 'user', content: `用户回答: ${req.answer}` })
   } else {
@@ -106,6 +112,11 @@ export async function* runReactLoop(
     const understood = await deps.understand(req.request, loc, persona, req.preferences)
     constraints = { ...understood.constraints, district: understood.constraints.district ?? loc.district ?? null }
     city = loc.city
+    // anchor center: user anchor (resolved) → resolved location center → null (densest-cluster at finish).
+    if (understood.anchor && deps.resolveAnchor) {
+      anchorCenter = await deps.resolveAnchor(understood.anchor, city).catch(() => null)
+    }
+    if (!anchorCenter && loc.center) anchorCenter = loc.center
     yield stage('understand', '读懂需求', 'ok', { summary: understood.llmUsed ? 'LLM 解析' : '规则解析' })
     yield { type: 'constraints', constraints }
 
@@ -146,7 +157,7 @@ export async function* runReactLoop(
         .filter(Boolean)
         .slice(0, 6)
       const results = await Promise.all(
-        kws.map((k) => deps.searchPOI(k, district).catch(() => [] as EnrichedPOI[])),
+        kws.map((k) => deps.searchPOI(k, district, anchorCenter ?? undefined).catch(() => [] as EnrichedPOI[])),
       )
       const found = results.flat()
       const added = dedupeInto(candById, found)
@@ -166,25 +177,25 @@ export async function* runReactLoop(
         : undefined
       const id = deps.conversationId()
       const owner = identity.userId != null ? String(identity.userId) : identity.deviceToken
-      const state: ReactState = { messages, candidates: [...candById.values()], constraints, city }
+      const state: ReactState = { messages, candidates: [...candById.values()], constraints, city, anchorCenter }
       try { await deps.saveConversation(id, owner, state) } catch { /* best-effort; still ask */ }
       yield { type: 'question', conversationId: id, question, ...(options ? { options } : {}) }
       return
     }
 
     // tool === 'finish'
-    yield* finishWith(candById, constraints, persona, req, identity, deps)
+    yield* finishWith(candById, constraints, persona, req, identity, deps, false, anchorCenter)
     return
   }
 
   // ── 3) MAX_STEPS exhausted without finish → honest forced finish ──────────
   if (candById.size >= 2) {
     yield { type: 'thought', text: `已达最大步数,用当前 ${candById.size} 家真实候选直接出方案。` }
-    yield* finishWith(candById, constraints, persona, req, identity, deps, true)
+    yield* finishWith(candById, constraints, persona, req, identity, deps, true, anchorCenter)
     return
   }
   // not enough real candidates even after exhausting steps → fall back
-  yield* fallback(req, identity, deps, persona, constraints, city, candById)
+  yield* fallback(req, identity, deps, persona, constraints, city, candById, anchorCenter)
 }
 
 function stage(key: string, label: string, status: 'running' | 'ok' | 'skip' | 'fail', extra: Partial<SSEEvent> = {}): SSEEvent {
@@ -194,13 +205,14 @@ function stage(key: string, label: string, status: 'running' | 'ok' | 'skip' | '
 async function* finishWith(
   candById: Map<string, EnrichedPOI>, constraints: Constraints, persona: any,
   req: PlanRequest, identity: ReactIdentity, deps: ReactDeps, forced = false,
+  anchorCenter: { lat: number; lng: number } | null = null,
 ): AsyncGenerator<SSEEvent> {
   const candidates = [...candById.values()]
   yield* planFromCandidates(
     candidates, constraints, persona, req,
     { deviceToken: identity.deviceToken, userId: identity.userId },
     { streamExplanation: deps.streamExplanation, savePlan: deps.savePlan, planId: deps.planId } as any,
-    { amapStatus: 'ok', forced },
+    { amapStatus: 'ok', forced, center: anchorCenter ?? undefined },
   )
 }
 
@@ -208,13 +220,17 @@ async function* finishWith(
 async function* fallback(
   req: PlanRequest, identity: ReactIdentity, deps: ReactDeps, persona: any,
   constraints: Constraints, city: string, candById: Map<string, EnrichedPOI>,
+  anchorCenter: { lat: number; lng: number } | null = null,
 ): AsyncGenerator<SSEEvent> {
-  const loc = { city, district: constraints.district ?? null, center: undefined as any }
+  const loc = { city, district: constraints.district ?? null, center: anchorCenter ?? (undefined as any) }
   yield stage('retrieve', '召回真实地点', 'running')
   let retrieved: RetrieveResult
   try {
     const understood = await deps.understand(req.request, loc, persona, req.preferences)
-    retrieved = await deps.retrieve(understood.keywords, { ...loc, district: understood.constraints.district ?? loc.district })
+    retrieved = await deps.retrieve(understood.keywords, {
+      ...loc, district: understood.constraints.district ?? loc.district,
+      anchorCenter: anchorCenter ?? undefined,
+    })
   } catch {
     retrieved = { pois: [], center: { lat: 0, lng: 0 }, cacheHits: 0, cacheMisses: 0, amapStatus: 'error' }
   }
@@ -237,6 +253,6 @@ async function* fallback(
     merged, constraints, persona, req,
     { deviceToken: identity.deviceToken, userId: identity.userId },
     { streamExplanation: deps.streamExplanation, savePlan: deps.savePlan, planId: deps.planId } as any,
-    { amapStatus: retrieved.amapStatus, cacheHits: retrieved.cacheHits, cacheMisses: retrieved.cacheMisses },
+    { amapStatus: retrieved.amapStatus, cacheHits: retrieved.cacheHits, cacheMisses: retrieved.cacheMisses, center: anchorCenter ?? undefined },
   )
 }
