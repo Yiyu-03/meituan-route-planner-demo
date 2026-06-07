@@ -1,7 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
-import { Search, MessageCircleQuestion, Flag, Eye, Sparkles, Loader } from 'lucide-react'
+import { Search, MessageCircleQuestion, Flag, Eye, Sparkles, Loader, PencilLine } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { AgentStep } from '../hooks/usePlanStream'
+
+export type ThinkingVariant = 'plan' | 'refine'
+
+/** Per-variant copy + chrome. refine reads as a 朱砂红批注 (red-pen edit) on the existing 手帐. */
+const VARIANT: Record<ThinkingVariant, {
+  Icon: LucideIcon; title: string; titleStreaming: string; pulse: string; rail: string
+}> = {
+  plan: {
+    Icon: Sparkles, title: '思考过程', titleStreaming: '思考过程', pulse: '正在思考',
+    rail: 'border-l-2 border-dashed border-[var(--hairline)]',
+  },
+  refine: {
+    Icon: PencilLine, title: '改动思路', titleStreaming: '正在改方案', pulse: '正在改方案',
+    rail: 'border-l-2 border-[var(--cinnabar)]',
+  },
+}
 
 const TOOL_ICON: Record<'searchPOI' | 'askUser' | 'finish', LucideIcon> = {
   searchPOI: Search,
@@ -174,13 +190,13 @@ function StepRow({
 }
 
 /** Low-key "thinking…" pulse anchored at the bottom of the trail while streaming. */
-function ThinkingPulse({ reduced }: { reduced: boolean }) {
+function ThinkingPulse({ reduced, label }: { reduced: boolean; label: string }) {
   return (
     <li className="flex items-center gap-2 pl-0.5 text-[var(--ink-soft)]">
       <span className={reduced ? 'inline-flex' : 'at-spin'}>
         <Loader size={13} strokeWidth={1.8} aria-hidden />
       </span>
-      <span className="hand text-[12px]">正在思考</span>
+      <span className="hand text-[12px]">{label}</span>
       <span className="at-dots latin text-[12px]" aria-hidden>
         <span>·</span>
         <span>·</span>
@@ -191,7 +207,9 @@ function ThinkingPulse({ reduced }: { reduced: boolean }) {
 }
 
 /** Live reasoning trail (reason → act → observe), v2 手帐风. Expanded while streaming; foldable when done. */
-export function AgentThinking({ steps, streaming }: { steps: AgentStep[]; streaming: boolean }) {
+export function AgentThinking({ steps, streaming, variant = 'plan' }: {
+  steps: AgentStep[]; streaming: boolean; variant?: ThinkingVariant
+}) {
   // Auto-expand during streaming; once done, default to folded (can fold into the why-drawer).
   const [open, setOpen] = useState(true)
   const reduced = usePrefersReducedMotion()
@@ -199,20 +217,22 @@ export function AgentThinking({ steps, streaming }: { steps: AgentStep[]; stream
 
   const expanded = streaming || open
   const lastIndex = steps.length - 1
+  const v = VARIANT[variant]
+  const HeadIcon = v.Icon
 
   return (
     <section className="paper-card p-3" aria-live="polite">
       <style>{ANIM_CSS}</style>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5 text-[13px] text-[var(--ink)]">
-          <Sparkles size={14} strokeWidth={1.8} aria-hidden className="text-[var(--cinnabar)]" />
-          <span className="hand">思考过程</span>
+          <HeadIcon size={14} strokeWidth={1.8} aria-hidden className="text-[var(--cinnabar)]" />
+          <span className="hand">{streaming ? v.titleStreaming : v.title}</span>
           {streaming && <span className="dot-cinnabar inline-block h-1.5 w-1.5 animate-pulse rounded-full" />}
         </div>
         {!streaming && (
           <button
             type="button"
-            onClick={() => setOpen((v) => !v)}
+            onClick={() => setOpen((val) => !val)}
             className="latin text-[12px] text-[var(--ink-soft)]"
           >
             {expanded ? '收起' : '展开'}
@@ -220,7 +240,7 @@ export function AgentThinking({ steps, streaming }: { steps: AgentStep[]; stream
         )}
       </div>
       {expanded && (
-        <ol className="mt-3 space-y-2 border-l-2 border-dashed border-[var(--hairline)] pl-3">
+        <ol className={`mt-3 space-y-2 pl-3 ${v.rail}`}>
           {steps.map((step, i) => (
             <StepRow
               key={i}
@@ -230,7 +250,7 @@ export function AgentThinking({ steps, streaming }: { steps: AgentStep[]; stream
               reduced={reduced}
             />
           ))}
-          {streaming && <ThinkingPulse reduced={reduced} />}
+          {streaming && <ThinkingPulse reduced={reduced} label={v.pulse} />}
         </ol>
       )}
     </section>

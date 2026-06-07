@@ -34,6 +34,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
 }) {
   const { state, run, answer, loadPlan, reset } = usePlanStream()
   const [lastRequest, setLastRequest] = useState('')
+  const [thinkMode, setThinkMode] = useState<'plan' | 'refine'>('plan')
   const [shelfKey, setShelfKey] = useState(0)
   const [shelfOpen, setShelfOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
@@ -52,6 +53,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
 
   const submit = (value: InputSubmit) => {
     setLastRequest(value.request)
+    setThinkMode('plan')
     const request: PlanRequest = {
       request: value.request,
       preferences: value.preferences,
@@ -61,6 +63,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
   }
 
   const clarifyCity = (city: string) => {
+    setThinkMode('plan')
     const request: PlanRequest = {
       request: `城市：${city}，${lastRequest}`,
       preferences: { personaPick: 'auto', prefs: [], budgetPref: null },
@@ -71,6 +74,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
 
   const refine = (request: string) => {
     if (!state.route) return
+    setThinkMode('refine')
     const payload: PlanRequest = {
       request,
       preferences: { personaPick: 'auto', prefs: [], budgetPref: null },
@@ -174,7 +178,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
               <section className="space-y-3">
                 {/* 思考流:规划中实时展开;有方案后折叠备查 */}
                 {state.thinking.length > 0 && (
-                  <AgentThinking steps={state.thinking} streaming={state.streaming} />
+                  <AgentThinking steps={state.thinking} streaming={state.streaming} variant={thinkMode} />
                 )}
 
                 {/* 反问:agent 在等用户回答,朱砂高亮 */}

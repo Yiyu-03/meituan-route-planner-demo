@@ -265,7 +265,16 @@ async function* runReplanLoop(
     yield { type: 'error', code: 'insufficient-data', message: '修改后行程过短，无法成行。', recoverable: true }
     return
   }
-  yield stage('build', '改方案', changed ? 'ok' : 'skip', { summary: note })
+  // Stage summary stays op-generic for replace/add (repair may re-pick the concrete store);
+  // the post-route reflective thought reports the ACTUAL final stop so nothing contradicts the route.
+  const buildSummary = !changed
+    ? note
+    : op.op === 'remove' || op.op === 'rebudget'
+      ? note
+      : op.op === 'add'
+        ? '已加一站'
+        : `已更新第${tgtIdx + 1}站`
+  yield stage('build', '改方案', changed ? 'ok' : 'skip', { summary: buildSummary })
 
   // 5) materialize → validate → repair (reuse the same core)
   let route = materializeRoute(picks, constraints, persona, 0)
@@ -291,7 +300,7 @@ async function* runReplanLoop(
   yield { type: 'route', route: stripRoute(best) }
 
   // reflect the ACTUAL outcome (repair may have re-picked) so the trail never contradicts the route
-  if (changed && tgtIdx >= 0 && tgtIdx < best.stops.length && (op.op === 'cheaper' || op.op === 'higher_rated' || op.op === 'closer' || op.op === 'swap')) {
+  if (changed && (op.op === 'cheaper' || op.op === 'higher_rated' || op.op === 'closer' || op.op === 'swap') && tgtIdx >= 0 && tgtIdx < best.stops.length) {
     const after = best.stops[tgtIdx]?.poi
     const before = previousPlan.stops[tgtIdx]?.poi
     if (after && before && after.id !== before.id) {
@@ -302,6 +311,11 @@ async function* runReplanLoop(
           : after.perCapita != null ? `(¥${after.perCapita})` : ''
       yield { type: 'thought', text: `第${tgtIdx + 1}站已换成「${after.name}」${priceCmp},其余站保留。` }
     }
+  } else if (changed && op.op === 'add') {
+    // the added stop is whichever real stop is new vs the previous plan
+    const prevIds = new Set(previousPlan.stops.map((s) => s.poi.id))
+    const added = best.stops.find((s) => !prevIds.has(s.poi.id))?.poi
+    if (added) yield { type: 'thought', text: `已加一站「${added.name}」${added.perCapita != null ? `(¥${added.perCapita})` : ''},其余站保留。` }
   }
 
   // 7) explanation
