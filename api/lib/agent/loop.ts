@@ -44,7 +44,7 @@ export async function* runPlanLoop(
   // 1) resolveLocation
   yield stage('resolve', '定位城市', 'running')
   const loc = await deps.resolveLocation(req.request)
-  if (loc.status !== 'resolved' || !loc.city || !loc.center) {
+  if (loc.status !== 'resolved' || !loc.city) {
     yield stage('resolve', '定位城市', 'fail')
     yield { type: 'error', code: 'needs-clarification', message: loc.message || '需要补充具体城市或区域，未默认回退。', recoverable: true }
     return
@@ -73,9 +73,15 @@ export async function* runPlanLoop(
   yield stage('retrieve', '召回真实地点', 'ok', { summary: `${retrieved.pois.length} 家真实店` })
 
   // 4) score
+  // City resolved but no district center? Use the centroid of the real retrieved
+  // POIs as the proximity anchor — derived from real coordinates, never fabricated.
+  const center = loc.center ?? {
+    lat: retrieved.pois.reduce((s, p) => s + p.lat, 0) / retrieved.pois.length,
+    lng: retrieved.pois.reduce((s, p) => s + p.lng, 0) / retrieved.pois.length,
+  }
   yield stage('score', '打分', 'running')
   const pois: EnrichedPOI[] = retrieved.pois
-  const scored = scorePOIs(pois, constraints, persona, retrieved.center.lat, retrieved.center.lng)
+  const scored = scorePOIs(pois, constraints, persona, center.lat, center.lng)
   yield stage('score', '打分', 'ok')
   yield { type: 'candidates', candidates: scored.map(stripScored) }
 
