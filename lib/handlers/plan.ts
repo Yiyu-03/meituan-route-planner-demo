@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { PlanRequestSchema } from '../../contract/index.js'
-import { resolveLocation, getAmapKey } from '../locationResolver.js'
+import { resolveLocation, getAmapKey, resolveAnchor } from '../locationResolver.js'
 import { openSSE } from '../sse.js'
 import { createGuest } from '../db/users.js'
 import { resolveIdentity } from '../identity.js'
@@ -54,13 +54,19 @@ export default async function handler(req, res) {
   const key = getAmapKey()
   const apiKey = process.env.DEEPSEEK_API_KEY ?? ''
 
-  // single-keyword real POI search (amap place/text via cache) — ReAct's searchPOI tool.
-  const searchPOI = async (keyword, district) => {
+  // single-keyword real POI search — ReAct's searchPOI tool.
+  // With anchorCenter → place/around (clustered); else city-wide place/text.
+  const searchPOI = async (keyword, district, anchorCenter) => {
     const resolved = await resolveLocation(reqData.request).catch(() => null)
     const city = resolved?.city ?? null
     if (!city) return []
     const result = await retrieve(
-      { keywords: [keyword], location: { city, district: district ?? null, center: resolved.center }, key },
+      {
+        keywords: [keyword],
+        location: { city, district: district ?? null, center: anchorCenter ?? resolved.center },
+        key,
+        anchorCenter: anchorCenter ?? undefined,
+      },
       { readCache: (k) => readCache(k), writeCache: (k, payload) => writeCache(k, payload) },
     )
     return result.pois
@@ -78,11 +84,13 @@ export default async function handler(req, res) {
 
   const sharedDeps = {
     resolveLocation,
+    resolveAnchor: (anchorText, city) => resolveAnchor(anchorText, city),
     attachLegs: key ? (route) => attachRealLegs(route, cachedLeg) : undefined,
     understand: (raw, loc, persona, preferences) => understand(raw, loc, persona, preferences, {}),
-    retrieve: (keywords, loc) => retrieve({ keywords, location: loc, key }, {
-      readCache: (k) => readCache(k), writeCache: (k, payload) => writeCache(k, payload),
-    }),
+    retrieve: (keywords, loc) => retrieve(
+      { keywords, location: loc, key, anchorCenter: loc?.anchorCenter, radius: loc?.radius },
+      { readCache: (k) => readCache(k), writeCache: (k, payload) => writeCache(k, payload) },
+    ),
     streamExplanation: (route, c) => streamExplanation(route, c, { apiKey }),
     savePlan: (record) => (hasDatabase() ? savePlan(record) : Promise.resolve({ id: record.id })),
     planId: () => `plan-${randomUUID()}`,

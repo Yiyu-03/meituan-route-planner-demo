@@ -104,6 +104,24 @@ describe('runReactLoop', () => {
     expect(events.at(-1).type).toBe('done')
   })
 
+  it('resolves the user anchor and passes its center into searchPOI', async () => {
+    const script = [
+      { thought: '搜', action: { tool: 'searchPOI', args: { keywords: ['本帮菜'] } } },
+      { thought: '够了', action: { tool: 'finish', args: {} } },
+    ]
+    let i = 0
+    const chatJson = vi.fn(async () => script[i++])
+    const anchor = { lat: 31.23, lng: 121.45 }
+    const resolveAnchor = vi.fn(async () => anchor)
+    const seen: any[] = []
+    const searchPOI = vi.fn(async (_kw: string, _d?: string, center?: any) => { seen.push(center); return familyPois })
+    const understand = async () => ({ constraints: seed.constraints, keywords: ['本帮菜'], llmUsed: true, anchor: '新世界城' })
+    await collect(runReactLoop(request, identity, baseDeps({ chatJson, resolveAnchor, searchPOI, understand }) as any))
+
+    expect(resolveAnchor).toHaveBeenCalledWith('新世界城', '上海')
+    expect(seen[0]).toEqual(anchor)
+  })
+
   it('askUser saves conversation, emits question, and ends the stream', async () => {
     const chatJson = vi.fn(async () => ({
       thought: '预算不清楚', action: { tool: 'askUser', args: { question: '预算大概多少？', options: ['人均100', '人均200'] } },
