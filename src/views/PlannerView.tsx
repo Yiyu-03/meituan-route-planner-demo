@@ -34,6 +34,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
 }) {
   const { state, run, answer, loadPlan, reset } = usePlanStream()
   const [lastRequest, setLastRequest] = useState('')
+  const [prompt, setPrompt] = useState('')
   const [thinkMode, setThinkMode] = useState<'plan' | 'refine'>('plan')
   const [shelfKey, setShelfKey] = useState(0)
   const [shelfOpen, setShelfOpen] = useState(false)
@@ -94,12 +95,16 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
       constraints: record.constraints,
       dataSources: record.dataSources,
     })
+    // reflect the loaded plan's original query in the input box
+    setPrompt(record.request)
+    setLastRequest(record.request)
     setShelfOpen(false)
   }
 
   const newPage = () => {
     prevPlanId.current = null
     reset()
+    setPrompt('')
     setLastRequest('')
     setShelfOpen(false)
   }
@@ -157,7 +162,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
 
           <div className="min-w-0">
             <div className="px-4 lg:px-0">
-              <InputBar onSubmit={submit} busy={state.streaming} />
+              <InputBar onSubmit={submit} busy={state.streaming} value={prompt} onValueChange={setPrompt} />
               <div className="mt-2"><ProgressTrail stages={state.stages} /></div>
             </div>
 

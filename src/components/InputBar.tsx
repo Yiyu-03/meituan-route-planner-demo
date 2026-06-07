@@ -25,8 +25,16 @@ const PREF_CHIPS: { key: string; label: string }[] = [
 
 const EXAMPLE = '周末下午在上海静安找个安静咖啡，再吃顿本帮菜，人均300内'
 
-export function InputBar({ onSubmit, busy }: { onSubmit: (v: InputSubmit) => void; busy: boolean }) {
-  const [text, setText] = useState('')
+export function InputBar({ onSubmit, busy, value, onValueChange }: {
+  onSubmit: (v: InputSubmit) => void
+  busy: boolean
+  /** Optional controlled text — when provided, the parent owns the prompt (e.g. load a history plan). */
+  value?: string
+  onValueChange?: (v: string) => void
+}) {
+  const [internal, setInternal] = useState('')
+  const text = value !== undefined ? value : internal
+  const setText = (v: string) => { onValueChange ? onValueChange(v) : setInternal(v) }
   const [persona, setPersona] = useState<PlanRequest['preferences']['personaPick']>('auto')
   const [prefs, setPrefs] = useState<string[]>([])
 
