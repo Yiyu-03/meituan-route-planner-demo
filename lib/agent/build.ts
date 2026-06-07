@@ -115,7 +115,11 @@ export function buildRouteCandidates(
     }
   }
 
-  const minStops = c.pace === 'relaxed' && slots.length <= 2 ? 2 : 3
+  // Don't demand 3 stops when the user only asked for 2 things (e.g. 羊肉串+博物馆):
+  // cap the minimum by how many distinct categories actually have real candidates.
+  const availableCats = new Set(scored.map((s) => s.poi.category)).size
+  const target = c.pace === 'relaxed' && slots.length <= 2 ? 2 : 3
+  const minStops = Math.max(2, Math.min(target, availableCats))
   const routes = beams
     .filter((b) => b.picks.length >= minStops)
     .slice(0, OUTPUT)
