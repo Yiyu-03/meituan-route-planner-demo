@@ -53,9 +53,21 @@ function openAtSlot(route: Route, idx: number, cand: ScoredPOI): boolean {
   return arrive >= open - 0.01 && arrive + durOf(cand) / 60 <= close + 0.01
 }
 
+/** Active refine intent — biases repair's swaps so a forced replacement still honors the user's ask. */
+export type RepairPrefer = 'cheaper' | 'higher_rated' | null
+
+/** Order candidates so the active edit criterion wins ties/choices, falling back to score. */
+function preferSort(cands: ScoredPOI[], prefer: RepairPrefer): ScoredPOI[] {
+  if (prefer === 'cheaper') return [...cands].sort((a, b) => price(a) - price(b) || b.score - a.score)
+  if (prefer === 'higher_rated') return [...cands].sort((a, b) => (b.poi.rating ?? 0) - (a.poi.rating ?? 0) || b.score - a.score)
+  return [...cands].sort((a, b) => b.score - a.score)
+}
+
 export function repairIfNeeded(
   route: Route, constraints: Constraints, persona: Persona, allScored: ScoredPOI[],
+  opts: { prefer?: RepairPrefer } = {},
 ): { route: Route; logs: RepairLog[] } {
+  const prefer = opts.prefer ?? null
   let current = route
   const logs: RepairLog[] = []
   const maxRounds = constraints.budgetPerCapita != null ? 5 : 2
@@ -104,9 +116,9 @@ export function repairIfNeeded(
       if (!victim) break
       const idx = current.stops.findIndex((s) => s.poi.id === victim.poi.id)
       const arrive = victim.arrive
-      const repl = replacementPool(current, allScored, victim.poi.category)
+      const openCands = replacementPool(current, allScored, victim.poi.category)
         .filter((s) => arrive >= (s.poi.openHour ?? 0) && arrive + durOf(s) / 60 <= (s.poi.closeHour ?? 24))
-        .sort((a, b) => b.score - a.score)[0]
+      const repl = preferSort(openCands, prefer)[0]
       if (!repl) { logs.push({ round, trigger: issue.label, action: '未找到营业时间匹配的同类候选', before, after: before, resolved: false }); break }
       picks[idx] = repl
       action = `营业时间冲突，将「${victim.poi.name}」替换为同类可营业的「${repl.poi.name}」`

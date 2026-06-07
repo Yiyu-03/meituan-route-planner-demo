@@ -259,9 +259,11 @@ async function* runReplanLoop(
   yield stage('validate', '体检', 'ok')
 
   yield stage('repair', '修复', 'running')
-  // repair pool = kept-stop picks + fresh candidates, so it can downgrade/swap safely
+  // repair pool = kept-stop picks + fresh candidates, so it can downgrade/swap safely.
+  // Bias any forced swap toward the user's criterion so repair can't undo "更便宜/评分更高".
   const repairPool = [...picks.map((p) => ({ ...p })), ...scoredPool]
-  route = repairIfNeeded(route, constraints, persona, repairPool).route
+  const repairPrefer = op.op === 'cheaper' ? 'cheaper' : op.op === 'higher_rated' ? 'higher_rated' : null
+  route = repairIfNeeded(route, constraints, persona, repairPool, { prefer: repairPrefer }).route
   yield stage('repair', '修复', 'ok')
 
   // 6) rank (single route) → real Amap legs → route event before explanation
@@ -272,6 +274,20 @@ async function* runReplanLoop(
     best = { ...routed, id: best.id, checks: validateRoute(routed, constraints, persona) }
   }
   yield { type: 'route', route: stripRoute(best) }
+
+  // reflect the ACTUAL outcome (repair may have re-picked) so the trail never contradicts the route
+  if (changed && tgtIdx >= 0 && tgtIdx < best.stops.length && (op.op === 'cheaper' || op.op === 'higher_rated' || op.op === 'closer' || op.op === 'swap')) {
+    const after = best.stops[tgtIdx]?.poi
+    const before = previousPlan.stops[tgtIdx]?.poi
+    if (after && before && after.id !== before.id) {
+      const priceCmp = op.op === 'cheaper' && before.perCapita != null && after.perCapita != null
+        ? `(¥${before.perCapita} → ¥${after.perCapita}${after.perCapita < before.perCapita ? ',更省' : ''})`
+        : op.op === 'higher_rated' && before.rating != null && after.rating != null
+          ? `(${before.rating}分 → ${after.rating}分)`
+          : after.perCapita != null ? `(¥${after.perCapita})` : ''
+      yield { type: 'thought', text: `第${tgtIdx + 1}站已换成「${after.name}」${priceCmp},其余站保留。` }
+    }
+  }
 
   // 7) explanation
   yield stage('explain', '写推荐理由', 'running')

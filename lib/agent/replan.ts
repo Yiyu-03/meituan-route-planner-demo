@@ -342,20 +342,44 @@ export function applyEdit(
   return { picks, changed: true, note: `已把「${current.poi.name}」换成「${repl.poi.name}」。` }
 }
 
+/** Cuisine / sub-type markers — keep a replacement the SAME kind (换更便宜的火锅 ≠ 随便一家餐厅). */
+const CUISINE_MARKERS = [
+  '火锅', '串串香', '串串', '烤鱼', '烧烤', '烤肉', '小龙虾', '海鲜', '日料', '寿司', '韩餐', '烤肉',
+  '西餐', '牛排', '披萨', 'brunch', '早午餐', '川菜', '湘菜', '粤菜', '本帮菜', '江浙菜', '东北菜',
+  '面馆', '米线', '冒菜', '钵钵鸡', '小吃', '茶餐厅', '酒馆', '居酒屋', '清吧', '精酿', '酒吧',
+  '咖啡', '茶饮', '甜品', '烘焙', '书店', '美术馆', '博物馆', '剧场', '影院',
+]
+
+/** Pull a distinctive sub-type keyword from a stop's name + tags, e.g. 龙户人家串串香 → 串串香. */
+function cuisineOf(poi: { name: string; tags?: string[] }): string | null {
+  const hay = `${poi.name} ${(poi.tags ?? []).join(' ')}`
+  for (const m of CUISINE_MARKERS) if (hay.includes(m)) return m
+  return null
+}
+
 /** Search keywords covering the categories an op may need to retrieve fresh candidates for. */
 export function keywordsForEdit(op: EditOp, prev: Route): string[] {
   let cat = op.targetCategory
-  if (!cat && op.targetIndex != null) cat = prev.stops[op.targetIndex]?.poi.category
-  if (!cat && op.op === 'cheaper') {
-    const i = prev.stops.reduce((best, s, idx) => ((s.poi.perCapita ?? 0) > (prev.stops[best].poi.perCapita ?? 0) ? idx : best), 0)
-    cat = prev.stops[i]?.poi.category
+  let targetIdx = op.targetIndex
+  if (cat == null && targetIdx == null && op.op === 'cheaper') {
+    targetIdx = prev.stops.reduce((best, s, idx) => ((s.poi.perCapita ?? 0) > (prev.stops[best].poi.perCapita ?? 0) ? idx : best), 0)
   }
+  if (!cat && targetIdx != null) cat = prev.stops[targetIdx]?.poi.category
+
   if (op.op === 'rebudget') {
     // need cheaper options across every paid category
     const cats = [...new Set(prev.stops.filter((s) => (s.poi.perCapita ?? 0) > 0).map((s) => s.poi.category))] as Category[]
     return [...new Set(cats.flatMap((c) => replanKeywords(prev, c)))].slice(0, 8)
   }
   if (!cat) cat = prev.stops[0]?.poi.category ?? 'dining'
-  return replanKeywords(prev, cat)
+
+  // Keep the same sub-type when we're replacing a concrete stop (火锅→火锅, 咖啡→咖啡).
+  const target = targetIdx != null ? prev.stops[targetIdx]?.poi : null
+  const cuisine = target ? cuisineOf(target) : null
+  const generic = replanKeywords(prev, cat)
+  if (!cuisine) return generic
+  const scope = prev.stops[0]?.poi.area || prev.stops[0]?.poi.city || ''
+  const scoped = scope ? `${scope} ${cuisine}` : cuisine
+  return [...new Set([scoped, cuisine, ...generic])].slice(0, 4)
 }
 

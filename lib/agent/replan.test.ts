@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseEditIntent, parseEditIntentLLM } from './replan.js'
+import { parseEditIntent, parseEditIntentLLM, keywordsForEdit } from './replan.js'
 import type { Route, RouteStop, POI } from '../../contract/index.js'
 
 function poi(over: Partial<POI>): POI {
@@ -154,5 +154,28 @@ describe('parseEditIntentLLM', () => {
       chatJson: async () => ({ op: 'higher_rated', targetIndex: 1, targetCategory: null, newBudget: null }),
     })
     expect(op.op).toBe('higher_rated')
+  })
+})
+
+describe('keywordsForEdit', () => {
+  const hotpotPlan: Route = {
+    ...prev,
+    stops: [
+      stop({ id: 'h1', category: 'dining', name: '龙户人家串串香', area: '锦江区', perCapita: 82 }),
+      stop({ id: 'c1', category: 'cafe', name: '星巴克', area: '锦江区' }),
+    ],
+  }
+
+  it('keeps the sub-type (火锅/串串香) when replacing a concrete dining stop', () => {
+    const kws = keywordsForEdit({ op: 'cheaper', targetIndex: 0, raw: '第一站换便宜的' }, hotpotPlan)
+    expect(kws.some((k) => k.includes('串串香'))).toBe(true)
+    // does not collapse to a bare generic 餐厅-only search
+    expect(kws[0]).toContain('串串香')
+  })
+
+  it('falls back to generic category keywords when no sub-type is detectable', () => {
+    const plainPlan: Route = { ...prev, stops: [stop({ id: 'd', category: 'dining', name: '某某馆子', area: '静安区' }), stop({ id: 'c', category: 'cafe', name: '咖啡' })] }
+    const kws = keywordsForEdit({ op: 'cheaper', targetIndex: 0, raw: 'x' }, plainPlan)
+    expect(kws.some((k) => k.includes('餐厅') || k.includes('美食'))).toBe(true)
   })
 })
