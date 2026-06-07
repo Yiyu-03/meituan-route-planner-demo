@@ -75,6 +75,7 @@ export function PlannerView({ identity, onLogout, fixtureOverride }: {
       request,
       preferences: { personaPick: 'auto', prefs: [], budgetPref: null },
       previousPlan: state.route,
+      baseRequest: lastRequest, // 把初始 query 一起给后端,LLM 才有完整意图上下文
     }
     run(payload, fixtureOverride ? { fixture: fixtureOverride } : undefined)
   }

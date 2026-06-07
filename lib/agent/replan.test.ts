@@ -138,4 +138,21 @@ describe('parseEditIntentLLM', () => {
     expect(op.op).toBe('cheaper')
     expect(op.targetIndex).toBe(1)
   })
+
+  it('never downgrades a stated criterion (便宜) into a plain swap', async () => {
+    // The LLM gap-filler must not erase the user's explicit "更便宜" → swap would pick a pricier place.
+    const op = await parseEditIntentLLM('第二家换便宜点的', prev, {
+      chatJson: async () => ({ op: 'swap', targetIndex: 1, targetCategory: null, newBudget: null }),
+    })
+    expect(op.op).toBe('cheaper')
+    expect(op.targetIndex).toBe(1)
+  })
+
+  it('still lets the LLM swap one criterion for another', async () => {
+    // 便宜 → 评分更高 is a real reinterpretation, not a downgrade, so it is allowed.
+    const op = await parseEditIntentLLM('第二家换便宜点的', prev, {
+      chatJson: async () => ({ op: 'higher_rated', targetIndex: 1, targetCategory: null, newBudget: null }),
+    })
+    expect(op.op).toBe('higher_rated')
+  })
 })

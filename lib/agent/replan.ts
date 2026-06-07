@@ -128,13 +128,20 @@ const VALID_CATS: Category[] = ['dining', 'cafe', 'culture', 'entertainment', 's
 
 export interface EditIntentDeps {
   chatJson?: (messages: any[]) => Promise<any | null>
+  /** The user's ORIGINAL request that produced the plan — full intent context for the LLM. */
+  baseRequest?: string
 }
 
-function editPrompt(request: string, prev: Route) {
-  const stops = prev.stops.map((s, i) => ({ index: i, category: s.poi.category, name: s.poi.name }))
+const CRITERION_OPS: EditOpKind[] = ['cheaper', 'closer', 'higher_rated']
+
+function editPrompt(request: string, prev: Route, baseRequest?: string) {
+  const stops = prev.stops.map((s, i) => ({
+    index: i, category: s.poi.category, name: s.poi.name,
+    perCapita: s.poi.perCapita, rating: s.poi.rating,
+  }))
   return [
-    { role: 'system', content: '你把中文「改方案」指令解析成结构化 JSON。只输出 JSON。字段：op(取自 cheaper|closer|higher_rated|swap|remove|add|rebudget) targetIndex(0 起的站序号|null) targetCategory(dining|cafe|culture|entertainment|shopping|nightscape|null) newBudget(number|null，仅 rebudget)。序数“第二/第3/最后一家”对应 targetIndex。' },
-    { role: 'user', content: JSON.stringify({ request, stops }) },
+    { role: 'system', content: '你把用户对已有路线的「改方案」指令解析成结构化 JSON。结合“原始需求 + 当前路线(含人均/评分) + 修改要求”理解意图。只输出 JSON。字段：op(取自 cheaper|closer|higher_rated|swap|remove|add|rebudget) targetIndex(0 起的站序号|null) targetCategory(dining|cafe|culture|entertainment|shopping|nightscape|null) newBudget(number|null，仅 rebudget)。序数“第二/第3/最后一家”对应 targetIndex。“更便宜/省钱”=cheaper，“更近/少走/少打车”=closer，“评分更高/口碑更好”=higher_rated。' },
+    { role: 'user', content: JSON.stringify({ originalRequest: baseRequest ?? null, currentPlan: stops, modification: request }) },
   ]
 }
 
@@ -146,10 +153,14 @@ export async function parseEditIntentLLM(
   if (!deps.chatJson) return base
 
   let llm: any = null
-  try { llm = await deps.chatJson(editPrompt(request, prev)) } catch { llm = null }
+  try { llm = await deps.chatJson(editPrompt(request, prev, deps.baseRequest)) } catch { llm = null }
   if (!llm || typeof llm !== 'object') return base
 
-  const op: EditOpKind = VALID_OPS.includes(llm.op) ? llm.op : base.op
+  // Never let the LLM downgrade a clearly-stated criterion (便宜/近/高分) into a plain swap.
+  const ruleIsCriterion = CRITERION_OPS.includes(base.op)
+  const op: EditOpKind = ruleIsCriterion && !CRITERION_OPS.includes(llm.op)
+    ? base.op
+    : (VALID_OPS.includes(llm.op) ? llm.op : base.op)
   const targetIndex = Number.isInteger(llm.targetIndex) && llm.targetIndex >= 0 && llm.targetIndex < prev.stops.length
     ? llm.targetIndex
     : base.targetIndex

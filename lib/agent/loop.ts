@@ -188,14 +188,25 @@ export async function* runPlanLoop(
 async function* runReplanLoop(
   req: PlanRequest, previousPlan: Route, identity: LoopIdentity, deps: LoopDeps, persona: ReturnType<typeof personaFor>,
 ): AsyncGenerator<SSEEvent> {
+  // 1) understand the edit — LLM with full context (original query + current plan), streamed reasoning
+  yield stage('understand', '读懂修改需求', 'running')
+  const planDesc = previousPlan.stops
+    .map((s, i) => `${i + 1}.${s.poi.name}${s.poi.perCapita != null ? `(¥${s.poi.perCapita})` : ''}`)
+    .join('  ')
+  yield { type: 'thought', text: `原计划「${req.baseRequest || '之前的安排'}」:${planDesc}。用户现在想:${req.request}。先定位改哪一站、按什么标准换。` }
   const op = deps.editChatJson
-    ? await parseEditIntentLLM(req.request, previousPlan, { chatJson: deps.editChatJson })
+    ? await parseEditIntentLLM(req.request, previousPlan, { chatJson: deps.editChatJson, baseRequest: req.baseRequest })
     : parseEditIntent(req.request, previousPlan)
   const constraints = constraintsFromPrev(previousPlan, persona, op)
-
-  // 1) understand the edit (deterministic op; LLM-free stage for parity)
-  yield stage('understand', '读懂修改需求', 'running')
-  yield stage('understand', '读懂修改需求', 'ok', { summary: `在改方案 · ${op.op}` })
+  const tgtIdx = op.targetIndex ?? (op.targetCategory ? previousPlan.stops.findIndex((s) => s.poi.category === op.targetCategory) : -1)
+  const tgtName = tgtIdx >= 0 ? previousPlan.stops[tgtIdx]?.poi.name : null
+  const OP_CN: Record<string, string> = { cheaper: '更便宜', closer: '更近', higher_rated: '评分更高', swap: '换一家', remove: '去掉', add: '加一站', rebudget: '调整预算' }
+  yield { type: 'thought', text:
+    op.op === 'remove' ? `决定:去掉${tgtName ? `「${tgtName}」` : '一站'},其余保留。`
+    : op.op === 'add' ? '决定:加一站,其余保留。'
+    : op.op === 'rebudget' ? `决定:预算调到 ¥${op.newBudget},对超支站降档。`
+    : `决定:把${tgtName ? `第${tgtIdx + 1}站「${tgtName}」` : '目标站'}换成${OP_CN[op.op]}的,其余保留。` }
+  yield stage('understand', '读懂修改需求', 'ok', { summary: `${OP_CN[op.op] ?? op.op}${tgtName ? ` · 第${tgtIdx + 1}站` : ''}` })
   yield { type: 'constraints', constraints }
 
   // 2) retrieve fresh real candidates for the targeted category(ies)
@@ -208,7 +219,9 @@ async function* runReplanLoop(
   let cacheMisses = 0
   const needsRetrieve = op.op !== 'remove'
   if (needsRetrieve) {
-    const retrieved = await deps.retrieve(keywordsForEdit(op, previousPlan), loc)
+    const kws = keywordsForEdit(op, previousPlan)
+    yield { type: 'action', tool: 'searchPOI', args: kws.join('、') }
+    const retrieved = await deps.retrieve(kws, loc)
     pool = retrieved.pois
     amapStatus = retrieved.amapStatus
     cacheHits = retrieved.cacheHits
@@ -218,6 +231,7 @@ async function* runReplanLoop(
       yield { type: 'error', code: 'upstream-unavailable', message: '高德 POI 服务暂不可用，未编造替换地点。', recoverable: true }
       return
     }
+    yield { type: 'observation', summary: `命中 ${pool.length} 家真实替换候选`, count: pool.length }
     yield stage('retrieve', '召回替换候选', 'ok', { summary: `${pool.length} 家真实候选` })
   } else {
     yield stage('retrieve', '召回替换候选', 'skip')

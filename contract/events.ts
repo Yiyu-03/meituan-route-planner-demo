@@ -12,6 +12,8 @@ export const PlanRequestSchema = z.object({
   }),
   previousPlan: RouteSchema.nullable(),
   sessionId: z.string().optional(),
+  // Refine: the user's ORIGINAL request that produced previousPlan, so the LLM keeps full intent context.
+  baseRequest: z.string().optional(),
   // ReAct: resume a paused conversation (askUser) with the user's answer.
   conversationId: z.string().optional(),
   answer: z.string().optional(),
