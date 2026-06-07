@@ -38,3 +38,12 @@ CREATE TABLE IF NOT EXISTS poi_cache (
   payload    JSONB NOT NULL,
   fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ReAct paused conversations (askUser → resume). state = jsonb { messages, candidates, constraints, city }.
+CREATE TABLE IF NOT EXISTS conversations (
+  id         TEXT PRIMARY KEY,
+  owner      TEXT,
+  state      JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ
+);
