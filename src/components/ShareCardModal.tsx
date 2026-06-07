@@ -28,14 +28,22 @@ export function ShareCardModal({ route, constraints, onClose }: {
       const nav = navigator as Navigator & {
         canShare?: (d: ShareData) => boolean; share?: (d: ShareData) => Promise<void>
       }
+      // Try the native share sheet (mobile). The awaits above break the user-activation transient,
+      // so on desktop share() often throws NotAllowedError — fall back to a download there. A user
+      // cancelling the sheet (AbortError) is not a failure.
       if (nav.canShare?.({ files: [file] }) && nav.share) {
-        await nav.share({ files: [file], title: '漫游·手帐' })
-        setMsg('已调起分享 ✓')
-      } else {
-        const a = document.createElement('a')
-        a.href = dataUrl; a.download = file.name; a.click()
-        setMsg('已保存到本地 ✓')
+        try {
+          await nav.share({ files: [file], title: '漫游·手帐' })
+          setMsg('已调起分享 ✓')
+          return
+        } catch (err) {
+          if ((err as Error)?.name === 'AbortError') { setMsg(''); return }
+          // otherwise fall through to download
+        }
       }
+      const a = document.createElement('a')
+      a.href = dataUrl; a.download = file.name; a.click()
+      setMsg('已保存到本地 ✓')
     } catch {
       setMsg('生成失败，请重试')
     } finally {
