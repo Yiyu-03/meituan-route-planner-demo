@@ -73,6 +73,13 @@ function num(v: string | undefined): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+/**
+ * Non-destinations / service POIs that should never appear as a stop on a leisure route
+ * (matched against name + Amap type). Filters out parking lots, transit nodes, hospitals,
+ * banks, schools, offices, hotels, warehouses, etc. — surfaced by keyword search but not places to visit.
+ */
+const BLOCKED_POI = /停车场|充电站|地铁站|公交[车站]|站台|[0-9]号口|出入口|检票|售票|配送|仓库|物流|批发市场|医院|门诊|诊所|卫生院|药店|药房|银行|信用社|ATM|证券|保险公司|加油站|加气站|政府|管委会|派出所|公安局|法院|检察院|税务|居委会|村委会|小学|中学|大学|学院|幼儿园|驾校|写字楼|商务楼|产业园|创业园|小区|公寓|住宅|宿舍|人才市场|人力资源|招聘|房产中介|营业厅|汽车维修|汽修|4S店|售楼|售楼处|有限公司|厕所|公共卫生间|殡仪|陵园|酒店|宾馆|招待所/
+
 /** Map a raw v5 POI to the contract POI enriched for the deterministic core. Returns null if unusable. */
 export function toEnrichedPOI(raw: AmapV5Poi, city: string, district: string | null): EnrichedPOI | null {
   const name = (raw.name || '').trim()
@@ -82,6 +89,7 @@ export function toEnrichedPOI(raw: AmapV5Poi, city: string, district: string | n
   if (!name || !Number.isFinite(lng) || !Number.isFinite(lat)) return null
 
   const typeText = `${name} ${raw.type || ''}`
+  if (BLOCKED_POI.test(typeText)) return null // non-destination / service POI — drop it
   const category = categoryFor(typeText)
   const b = raw.business || {}
   const { openHour, closeHour } = parseOpenHours(b.opentime_today || b.opentime_week)

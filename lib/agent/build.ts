@@ -37,7 +37,13 @@ function topKForSlots(slots: Category[], scored: ScoredPOI[]): Map<number, Score
   }
   const result = new Map<number, ScoredPOI[]>()
   slots.forEach((cat, idx) => {
-    result.set(idx, (byCat.get(cat) ?? []).slice(0, TOPK_PER_SLOT))
+    let pool = byCat.get(cat) ?? []
+    // If this slot's category has no real candidates (e.g. a single-category outing
+    // like a 古迹 citywalk where everything is `culture`), fall back to the overall
+    // best-scored candidates so the slot can still be filled. Beam-search dedup keeps
+    // stops distinct, so we get e.g. 3 distinct 古迹 instead of failing to compose.
+    if (pool.length === 0) pool = scored
+    result.set(idx, pool.slice(0, TOPK_PER_SLOT))
   })
   return result
 }
@@ -86,6 +92,7 @@ export function buildRouteCandidates(
         return true
       })
       const usePool = feasible.length ? feasible : pool
+      let extended = 0
       for (const cand of usePool) {
         if (beam.usedIds.has(cand.poi.id)) continue
         let legPenalty = 0
@@ -101,7 +108,10 @@ export function buildRouteCandidates(
           scoreSum: beam.scoreSum + cand.score,
           penalty: beam.penalty + legPenalty + waitPenalty,
         })
+        extended += 1
       }
+      // Couldn't extend (every fallback candidate already used / infeasible) → keep the beam.
+      if (extended === 0) next.push(beam)
     }
     next.sort((a, b) => (b.scoreSum - b.penalty) - (a.scoreSum - a.penalty))
     const seen = new Set<string>()
