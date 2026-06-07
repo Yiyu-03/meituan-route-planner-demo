@@ -3,7 +3,7 @@ import type { EnrichedPOI, RetrieveResult, UnderstandResult } from './types.js'
 import { personaFor } from './persona.js'
 import { planFromCandidates } from './loop.js'
 
-export const MAX_STEPS = 6
+export const MAX_STEPS = 4
 
 /** Persisted/resumable ReAct state (matches conversations.state jsonb shape). */
 export interface ReactState {
@@ -34,10 +34,16 @@ export interface ReactIdentity { deviceToken: string | null; userId: number | nu
 const TOOLS_DOC = `你是一个出行规划 agent，用 ReAct(推理→行动→观察)方式工作。每一步只输出一个严格 JSON 对象，不要任何多余文字:
 {"thought":"你的推理","action":{"tool":"searchPOI|askUser|finish","args":{...}}}
 工具:
-- searchPOI: 在已定位城市搜真实地点。args:{"keyword":"高德搜索词,可含区县","district":"可选区县"}。观察会回灌命中数与评分区间。
+- searchPOI: 在已定位城市搜真实地点。args:{"keywords":["关键词1","关键词2",...],"district":"可选区县"}。**一开始就把所有相互独立、能确定的搜索词一次性放进 keywords 数组**(它们会并行执行,远快于一步一个);只有需要根据上一步结果再调整时才追加新的 searchPOI。也兼容单个 {"keyword":"..."}。
 - askUser: 信息不足时反问用户(只在确有必要时)。args:{"question":"问题","options":["可选项..."]}。问完即暂停等待。
 - finish: 已有足够真实候选,产出方案。args:{}。
-约束: 候选只能来自 searchPOI 的真实结果,不要编造地点。最多 ${MAX_STEPS} 步,尽快 finish。`
+约束: 候选只能来自 searchPOI 的真实结果,不要编造地点。
+效率铁律(每次 LLM 调用都很慢,务必遵守):
+1. **第一步就把所有需要的关键词一次性放进 keywords 并行搜齐**(每个必去类目各 1-2 个词)。
+2. **只要每个必去类目都已有候选,立刻 finish**——通常第 2 步就该 finish。
+3. **绝不重复搜索已搜过的词**;不要为了"更全"反复搜同义词。
+4. 只有当某个必去类目完全无候选时,才追加一次不同方向的搜索。
+最多 ${MAX_STEPS} 步,但目标是 2 步内 finish。`
 
 function systemPrompt(constraints: Constraints, persona: any): string {
   return `${TOOLS_DOC}\n本次请求约束(已解析): ${JSON.stringify({
@@ -133,16 +139,21 @@ export async function* runReactLoop(
     messages.push({ role: 'assistant', content: JSON.stringify(decision) })
 
     if (tool === 'searchPOI') {
-      const kw = String(action.args?.keyword ?? '').trim()
       const district = action.args?.district ? String(action.args.district) : (constraints.district ?? undefined)
-      let found: EnrichedPOI[] = []
-      if (kw) {
-        try { found = await deps.searchPOI(kw, district) } catch { found = [] }
-      }
+      // Accept a single keyword or a batch of independent keywords — run them in PARALLEL.
+      const kws = (Array.isArray(action.args?.keywords) ? action.args.keywords : [action.args?.keyword])
+        .map((k: any) => String(k ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 6)
+      const results = await Promise.all(
+        kws.map((k) => deps.searchPOI(k, district).catch(() => [] as EnrichedPOI[])),
+      )
+      const found = results.flat()
       const added = dedupeInto(candById, found)
+      const head = kws.length > 1 ? `并行搜「${kws.join('、')}」: ` : ''
       const summary = found.length
-        ? `命中 ${found.length} 家(新增 ${added}),${ratingRange(found)},累计 ${candById.size}`
-        : `无命中,累计 ${candById.size}`
+        ? `${head}命中 ${found.length} 家(新增 ${added}),${ratingRange(found)},累计 ${candById.size}`
+        : `${head}无命中,累计 ${candById.size}`
       yield { type: 'observation', summary, count: found.length }
       messages.push({ role: 'user', content: `观察: ${summary}` })
       continue

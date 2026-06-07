@@ -80,6 +80,30 @@ describe('runReactLoop', () => {
     expect(chatJson).toHaveBeenCalledTimes(3)
   })
 
+  it('batches a keywords[] array into ONE parallel search step (fewer LLM round-trips)', async () => {
+    const script = [
+      { thought: '三类一次搜齐', action: { tool: 'searchPOI', args: { keywords: ['亲子餐厅', '咖啡', '美术馆'], district: '静安区' } } },
+      { thought: '够了', action: { tool: 'finish', args: {} } },
+    ]
+    let i = 0
+    const chatJson = vi.fn(async () => script[i++])
+    const calls: string[] = []
+    const catByKw: Record<string, EnrichedPOI['category']> = { 亲子餐厅: 'dining', 咖啡: 'cafe', 美术馆: 'culture' }
+    const searchPOI = vi.fn(async (kw: string) => {
+      calls.push(kw)
+      return [poi({ id: kw, name: kw, category: catByKw[kw] ?? 'dining' })]
+    })
+    const events = await collect(runReactLoop(request, identity, baseDeps({ chatJson, searchPOI }) as any))
+
+    // all three keywords searched within a SINGLE search step (one action + one observation)
+    expect(calls.sort()).toEqual(['亲子餐厅', '咖啡', '美术馆'].sort())
+    expect(events.filter((e) => e.type === 'action' && e.tool === 'searchPOI')).toHaveLength(1)
+    expect(events.filter((e) => e.type === 'observation')).toHaveLength(1)
+    // only 2 LLM round-trips (1 batched search + 1 finish), not 4
+    expect(chatJson).toHaveBeenCalledTimes(2)
+    expect(events.at(-1).type).toBe('done')
+  })
+
   it('askUser saves conversation, emits question, and ends the stream', async () => {
     const chatJson = vi.fn(async () => ({
       thought: '预算不清楚', action: { tool: 'askUser', args: { question: '预算大概多少？', options: ['人均100', '人均200'] } },
